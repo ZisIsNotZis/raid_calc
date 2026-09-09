@@ -11,14 +11,15 @@ Design truth (supreme):
 
 Implementation slices (tracer-bullet order, one ticket each in `issues/`):
 
-1. `04-core-engine` — config schema + concat/strip + CTMC solver + accounting (mode 1). Demoable: CLI evaluates a config, prints curves.
-2. `05-split-strategy` — split(N,M) placement/loss weights (strip-split deferred pending D4).
-3. `06-io-feasibility` — bandwidth params, fan-out/amplification, rebuild contention, effective T_rebuild.
-4. `07-spare-clusters` — global per-kind spares, spare-sharing joint clusters.
-5. `08-mc-crosscheck` — MC simulator + solver-agreement gate.
-6. `09-optimizer` — enumeration/greedy, gates, top-3 output.
-7. `10-ui-canvas` — node graph editor, props panel, config round-trip.
-8. `11-ui-results` — output node, charts, comparison overlay, optimize modal wiring.
-9. `12-build-bundle` — esbuild single-file artifact, README quickstart.
+1. `04-core-schema-strategies` — config schema + concat/strip strategy functions + worked-example tests.
+2. `05-ctmc-solver` — solver + composition + accounting (mode 1) + closed-form validation.
+3. `06-split-strategy` — split(N,M) (strip-split deferred pending D4).
+4. `07-io-feasibility` — bandwidth, amplification, contention, effective T_rebuild, slowdown factor.
+5. `08-spare-clusters` — global per-kind spares, joint clusters, state-space budget.
+6. `09-mc-crosscheck` — MC simulator + solver-agreement gate.
+7. `10-optimizer` — enumeration/greedy, gates, top-3 output.
+8. `11-ui-canvas` — node graph editor, props panel, config round-trip (parallelizable after 04).
+9. `12-ui-results` — output node, charts, comparison overlay, optimize modal wiring.
+10. `13-build-bundle` — esbuild single-file artifact, README quickstart.
 
 Open: D4 (mode 2 / strip-split scope) — user-gated; blocked slices would attach here.

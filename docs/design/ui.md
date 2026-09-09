@@ -12,11 +12,11 @@ Four regions (see sketch): header (mode chips, horizon, workload summary, Run / 
 - **Tree constraint, deliberately**: every node has at most one parent; no cycles, no multi-out. This is what the model allows, and it buys deterministic auto-layout (tidy-tree, one-click "tidy"), trivial validation, and no wire spaghetti — free-form ComfyUI routing is intentionally not offered.
 - **Typed ports**: disk-model outputs feed pool member inputs; pool outputs feed pool member inputs or the output node. Illegal connections rejected during drag (port highlights red).
 - Pool nodes list members inline rather than one node per physical disk (12 individual disk nodes would be noise; the disk-model node carries params once, pools reference it by kind).
-- Click node → properties panel; per-node **standalone preview** (that subtree's own E[loss]/P/rebuild-slowdown/usable) computed from the same engine — the graph doubles as an understanding tool.
+- Click node → properties panel; per-node **standalone preview** (that subtree's own E[loss]/P/rebuild-slowdown/usable, evaluated standalone with the workload scaled by its share of top-level usable capacity) computed in the **worker**, debounced (~300 ms) — the graph doubles as an understanding tool without freezing the tab.
 
 ## 3. Properties panel
 
-Context form for the selected node. Pool: strategy, N/M or D/M, λ_cc. Disk: kind params. Output: workload rates, avg file size, store ≥ X, horizon, mode 1/2 display toggle. Global (header or output): T_op, T_swap, T_proc, spares per kind, contention on/off, time unit. Inputs validated live (units, ranges); invalid values highlighted, config flagged unrunnable.
+Context form for the selected node. Pool: strategy, N/M or D/M, λ_cc. Disk: kind params. Output: workload rates, avg file size, store ≥ X, horizon, mode 1/2 display toggle. Global (header or output): T_op, T_swap, T_proc, spares per kind, contention on/off, time unit. Inputs validated live (units, ranges); invalid values highlighted, config flagged unrunnable. **Run is disabled while the config is flagged unrunnable** (validation errors, state-space budget exceeded, infeasible workload) with an explanatory tooltip; last-good curves stay visible, dimmed.
 
 ## 4. Auto-optimize surface
 
@@ -25,7 +25,7 @@ Modal (per sketch): constraint fields, objective dropdown, depth selector → re
 ## 5. Results & charts
 
 - Output node + top-level result summary (sidebar): E[lost bytes] @ T, P(any loss) @ T, usable, rebuild slowdown.
-- Charts: E[lost](t) and P(any loss)(t) per top-level config, mode 1 (and mode 2 when D4 lands) side by side; comparison overlay for optimizer top-3 and for manually pinned configs.
+- Charts: E[lost](t) on a **log y-axis**, P(any loss)(t) **linear 0–1** — expectations span orders of magnitude over the horizon; per top-level config, mode 1 (and mode 2 when D4 lands) side by side; comparison overlay for optimizer top-3 and for manually pinned configs. Rebuild-slowdown factor per raid-calc.md §3.7's single definition.
 - Per-node preview sparkline in properties panel.
 
 ## 6. State & persistence

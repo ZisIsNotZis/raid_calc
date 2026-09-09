@@ -1,8 +1,7 @@
-# Ticket: 12-build-bundle
+# Ticket: 13-build-bundle
 
 - **Status:** ready-for-agent
 - **Need-review:** yes (behavior changes)
-- **Blocked by:** previous slice
 
 ## Issue
 
@@ -16,4 +15,4 @@ Design refs: docs/design/raid-calc.md, optimizer.md, ui.md, architecture.md; sli
 
 ## Comments
 
-- 2026-02-05 agent (pi, terra/sol): created from impl plan round.
+- 2026-02-05 agent (pi, terra/sol): created from reviewed impl plan (v2 re-slice: 04 split into 04+05 per review sizing advice; UI canvas parallelizable; chain renumbered).

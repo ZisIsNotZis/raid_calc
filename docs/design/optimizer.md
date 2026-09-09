@@ -24,13 +24,15 @@ Infeasible configs are counted and dropped (count shown in UI as "feasible: N / 
 ## 4. Search space
 
 - **Templates, not free-form trees**: leaf pools = set partitions of the disk multiset (identical disks → group-size vectors only, large pruning); each leaf gets a strategy + params (concat / strip(D,M) / split(N,M), sensible M/N ranges); then zero or one top layer (strip / split over the leaf pools, or none). Depth ≤ 2 by default, ≤ 3 optional.
-- **Enumeration caps**: candidate count cap (e.g. 20k) shown in UI; beyond cap, greedy construction + local swaps (swap a disk between pools, change one strategy param). Deterministic tie-breaking (same objective → lexicographic config order) so results are reproducible.
+- **Enumeration caps**: candidate count cap (e.g. 20k) shown in UI; beyond cap, greedy construction + local swaps (swap a disk between pools, change one strategy param). Deterministic tie-breaking (same objective → lexicographic config order) so results are reproducible. **Budget policy**: per-candidate evaluation ≤ ~5 ms; when the sweep exceeds its wall-clock budget, degrade by shrinking the candidate cap first, then depth — never by skipping feasibility gates.
+- **Mirrors are in the search space** as `strip(1,1)` (2 members, 1 data + 1 parity).
 - Strip-split is excluded while D4 (mode-2 scope) is open.
 
 ## 5. Evaluation & output
 
-- Each feasible candidate: solve its spare-sharing cluster(s) (see raid-calc.md §3.3) → E[lost bytes] @ T, P(any loss) @ T, usable capacity, bottleneck utilization, rebuild-slowdown factor.
+- Each feasible candidate: solve its spare-sharing cluster(s) (see raid-calc.md §3.3) → E[lost bytes] @ T, P(any loss) @ T, usable capacity, bottleneck utilization, rebuild-slowdown factor (defined in raid-calc.md §3.7).
 - Rank by the chosen objective. Output: **top-3 table** (design summary, both metrics, capacity, bottleneck note) + curve overlay of the three; **Apply → canvas** paints the winner's tree via the same config JSON the editor uses. The optimizer emits configs — it never bypasses the editor.
+- **Reference example** (assertion test in ticket 10): 12× HDD 8 TB → 3× strip(3,1) → split(2,1), store 40 TB (the approved-sketch config) must appear as a feasible candidate and rank highly.
 
 ## 6. Honesty labels (shown in the optimizer panel)
 

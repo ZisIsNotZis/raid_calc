@@ -1,8 +1,7 @@
-# Ticket: 08-mc-crosscheck
+# Ticket: 09-mc-crosscheck
 
 - **Status:** ready-for-agent
 - **Need-review:** yes (behavior changes)
-- **Blocked by:** previous slice
 
 ## Issue
 
@@ -10,10 +9,10 @@ Discrete-event MC (worker-ready) implementing identical semantics; agreement gat
 
 ## Acceptance criteria
 
-AC: agreement test on ≥3 configs (mirror, RAID5, split); discrepancies diagnosable (per-state counts).
+AC: agreement on ≥3 configs (mirror, RAID5, split); discrepancies diagnosable via per-state counts.
 
 Design refs: docs/design/raid-calc.md, optimizer.md, ui.md, architecture.md; slice plan in ../spec.md.
 
 ## Comments
 
-- 2026-02-05 agent (pi, terra/sol): created from impl plan round.
+- 2026-02-05 agent (pi, terra/sol): created from reviewed impl plan (v2 re-slice: 04 split into 04+05 per review sizing advice; UI canvas parallelizable; chain renumbered).
