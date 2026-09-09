@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>raid_calc — UI sketch (static draft)</title>
+<style>
+  :root{
+    --bg:#14161a; --panel:#1d2026; --panel2:#232730; --line:#2e333d;
+    --text:#d7dae0; --muted:#8b909a; --accent:#4f8cff; --accent2:#7ee2a8;
+    --warn:#e8b45a; --bad:#e57373; --link:#4a5160;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{background:var(--bg); color:var(--text); font:13px/1.45 -apple-system,"Segoe UI",Roboto,sans-serif; overflow:hidden;}
+  .app{display:grid; grid-template-rows:46px 1fr; grid-template-columns:230px 1fr 300px; height:100vh;}
+  header{grid-column:1/4; display:flex; align-items:center; gap:10px; padding:0 14px; background:var(--panel); border-bottom:1px solid var(--line);}
+  header h1{font-size:14px; font-weight:600; margin-right:8px;}
+  .chip{background:var(--panel2); border:1px solid var(--line); border-radius:20px; padding:3px 10px; font-size:11.5px; color:var(--muted);}
+  .chip b{color:var(--text); font-weight:600;}
+  .spacer{flex:1;}
+  button{background:var(--accent); border:0; color:#fff; border-radius:7px; padding:7px 14px; font-size:12.5px; font-weight:600; cursor:pointer;}
+  button.ghost{background:var(--panel2); border:1px solid var(--line); color:var(--text); font-weight:500;}
+  button.magic{background:linear-gradient(100deg,#7b5cff,#4f8cff);}
+
+  /* left palette */
+  .side{background:var(--panel); border-right:1px solid var(--line); padding:12px; overflow:auto;}
+  .side h3{font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:14px 0 8px;}
+  .side h3:first-child{margin-top:0;}
+  .pal{display:flex; align-items:center; gap:8px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:6px; cursor:grab; font-size:12.5px;}
+  .dot{width:9px; height:9px; border-radius:50%;}
+  .inv{background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:9px 10px; margin-bottom:6px; font-size:12px;}
+  .inv .row{display:flex; justify-content:space-between; align-items:center; padding:2px 0;}
+  .inv .num{color:var(--accent2); font-weight:600;}
+  .inv .sub{color:var(--muted); font-size:11px;}
+  .inv input{width:34px; background:var(--bg); border:1px solid var(--line); color:var(--text); border-radius:5px; padding:2px 5px; font-size:11.5px; text-align:right;}
+
+  /* canvas */
+  .canvas{position:relative; overflow:auto; background:
+    radial-gradient(circle, #20242c 1px, transparent 1px) 0 0/22px 22px, var(--bg);}
+  .canvas svg.wires{position:absolute; inset:0; width:100%; height:100%;}
+  .node{position:absolute; width:210px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; box-shadow:0 6px 18px rgba(0,0,0,.35); font-size:12px;}
+  .node.sel{border-color:var(--accent); box-shadow:0 0 0 1.5px var(--accent), 0 6px 18px rgba(0,0,0,.4);}
+  .node .hd{display:flex; align-items:center; gap:7px; padding:8px 11px; border-bottom:1px solid var(--line); font-weight:600;}
+  .node .hd .badge{margin-left:auto; font-size:10px; font-weight:700; letter-spacing:.04em; border-radius:5px; padding:2px 6px; background:rgba(79,140,255,.15); color:var(--accent);}
+  .node .bd{padding:8px 11px; color:var(--muted);}
+  .node .bd .kv{display:flex; justify-content:space-between; padding:1.5px 0;}
+  .node .bd .kv b{color:var(--text); font-weight:500;}
+  .node .port{position:absolute; width:11px; height:11px; border-radius:50%; background:var(--bg); border:2px solid var(--accent); top:24px;}
+  .node .port.in{left:-6px;} .node .port.out{right:-6px; border-color:var(--accent2);}
+  .node .members{margin-top:6px; border-top:1px dashed var(--line); padding-top:6px;}
+  .node .mem{display:flex; align-items:center; gap:6px; padding:2px 0; color:var(--text);}
+  .node .mem .ok{width:7px;height:7px;border-radius:50%;background:var(--accent2);}
+  .node.out-node .hd{background:rgba(126,226,168,.08);}
+
+  /* right panel */
+  .props{background:var(--panel); border-left:1px solid var(--line); padding:12px; overflow:auto;}
+  .props h3{font-size:12.5px; margin-bottom:2px;}
+  .props .crumb{font-size:11px; color:var(--muted); margin-bottom:10px;}
+  .field{margin-bottom:7px;}
+  .field label{display:block; font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:2px;}
+  .field input,.field select{width:100%; background:var(--panel2); border:1px solid var(--line); color:var(--text); border-radius:6px; padding:5px 8px; font-size:12px;}
+  .props h4{font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin:14px 0 8px;}
+  .note{background:rgba(232,180,90,.08); border:1px solid rgba(232,180,90,.3); color:var(--warn); border-radius:8px; padding:8px 10px; font-size:11.5px; margin-top:12px;}
+  .mini-metrics{display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:10px 0;}
+  .mm{background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:7px 9px;}
+  .mm .v{font-size:15px; font-weight:700;}
+  .mm .k{font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em;}
+  .good{color:var(--accent2);} .warn{color:var(--warn);}
+
+  /* optimizer modal */
+  .modal{position:absolute; inset:0; background:rgba(10,12,16,.6); display:flex; align-items:center; justify-content:center; z-index:50;}
+  .modal .card{width:560px; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:18px; box-shadow:0 20px 60px rgba(0,0,0,.5);}
+  .modal h2{font-size:14px; margin-bottom:12px; display:flex; align-items:center; gap:8px;}
+  .modal .grid{display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-bottom:12px;}
+  table{width:100%; border-collapse:collapse; font-size:12px;}
+  th{color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; text-align:left; padding:5px 6px; border-bottom:1px solid var(--line);}
+  td{padding:7px 6px; border-bottom:1px solid var(--line);}
+  tr.win{background:rgba(126,226,168,.06);}
+  .tag{font-size:10px; border-radius:5px; padding:1.5px 6px; background:rgba(79,140,255,.15); color:var(--accent); font-weight:600;}
+  .why{color:var(--muted); font-size:11px;}
+  .modal .foot{display:flex; gap:8px; justify-content:flex-end; margin-top:14px;}
+</style>
+</head>
+<body>
+<div class="app">
+
+<header>
+  <h1>◉ raid_calc</h1>
+  <span class="chip">Mode <b>rigorous</b></span>
+  <span class="chip">Horizon <b>5 y</b></span>
+  <span class="chip">Workload <b>200 / 50 MB/s · 8 MB files</b></span>
+  <span class="chip">Store <b>≥ 40 TB</b></span>
+  <span class="chip">Spares <b>HDD ×1</b></span>
+  <div class="spacer"></div>
+  <button class="ghost">Import / Export</button>
+  <button class="ghost">▶ Run</button>
+  <button class="magic">✦ Auto-optimize</button>
+</header>
+
+<!-- LEFT: palette + inventory -->
+<nav class="side">
+  <h3>Nodes</h3>
+  <div class="pal"><span class="dot" style="background:var(--warn)"></span> Disk model</div>
+  <div class="pal"><span class="dot" style="background:var(--accent)"></span> Pool</div>
+  <div class="pal"><span class="dot" style="background:var(--accent2)"></span> Output</div>
+  <h3>Inventory</h3>
+  <div class="inv">
+    <div class="row"><span>HDD 8 TB</span><span class="num">×12</span></div>
+    <div class="row sub"><span>hot spares (auto)</span><input value="1"> </div>
+    <div class="row sub"><span>unused → discarded</span><span class="sub">0</span></div>
+  </div>
+  <h3>Top-level result</h3>
+  <div class="inv">
+    <div class="row"><span>E[lost] @5y</span><span class="num good">0.11 TB</span></div>
+    <div class="row"><span>P(any loss)</span><span class="num">2.1 %</span></div>
+    <div class="row"><span>Usable</span><span class="num">48 TB ✓</span></div>
+    <div class="row"><span>Rebuild slowdown</span><span class="num warn">×1.9</span></div>
+  </div>
+</nav>
+
+<!-- CENTER: node canvas -->
+<main class="canvas">
+  <svg class="wires">
+    <defs></defs>
+    <path d="M 190 235 C 225 235, 225 95, 260 95"  fill="none" stroke="var(--link)" stroke-width="2"/>
+    <path d="M 190 235 C 225 235, 225 265, 260 265" fill="none" stroke="var(--link)" stroke-width="2"/>
+    <path d="M 190 235 C 225 235, 225 435, 260 435" fill="none" stroke="var(--link)" stroke-width="2"/>
+    <path d="M 480 95  C 515 95,  515 210, 550 210" fill="none" stroke="var(--link)" stroke-width="2"/>
+    <path d="M 480 265 C 515 265, 515 235, 550 235" fill="none" stroke="var(--link)" stroke-width="2"/>
+    <path d="M 480 435 C 515 435, 515 260, 550 260" fill="none" stroke="var(--link)" stroke-width="2"/>
+    <path d="M 770 235 C 805 235, 805 130, 840 130" fill="none" stroke="var(--accent2)" stroke-width="2.5"/>
+  </svg>
+
+  <!-- disk model node -->
+  <div class="node" style="left:20px; top:170px;">
+    <div class="port out"></div>
+    <div class="hd"><span class="dot" style="background:var(--warn)"></span> HDD 8 TB <span class="badge">DISK</span></div>
+    <div class="bd">
+      <div class="kv"><span>capacity</span><b>8 TB</b></div>
+      <div class="kv"><span>λ base</span><b>2.8e-6 /h</b></div>
+      <div class="kv"><span>λ read / write</span><b>0.9 / 1.4 e-12/B</b></div>
+      <div class="kv"><span>URE</span><b>1e-14.1 /B</b></div>
+      <div class="kv"><span>R / W bw</span><b>190 / 170 MB/s</b></div>
+      <div class="members"><div class="mem"><span class="ok"></span>assigned ×12</div></div>
+    </div>
+  </div>
+
+  <!-- leaf pools -->
+  <div class="node" style="left:260px; top:50px;">
+    <div class="port in"></div><div class="port out"></div>
+    <div class="hd"><span class="dot" style="background:var(--accent)"></span> leaf-a <span class="badge">STRIP 3+1</span></div>
+    <div class="bd">
+      <div class="kv"><span>members</span><b>4× HDD 8TB</b></div>
+      <div class="kv"><span>parity</span><b>M = 1</b></div>
+      <div class="kv"><span>λ cc (shock)</span><b>1e-7 /h</b></div>
+      <div class="kv"><span>usable</span><b>24 TB</b></div>
+    </div>
+  </div>
+  <div class="node" style="left:260px; top:220px;">
+    <div class="port in"></div><div class="port out"></div>
+    <div class="hd"><span class="dot" style="background:var(--accent)"></span> leaf-b <span class="badge">STRIP 3+1</span></div>
+    <div class="bd">
+      <div class="kv"><span>members</span><b>4× HDD 8TB</b></div>
+      <div class="kv"><span>parity</span><b>M = 1</b></div>
+      <div class="kv"><span>λ cc (shock)</span><b>1e-7 /h</b></div>
+      <div class="kv"><span>usable</span><b>24 TB</b></div>
+    </div>
+  </div>
+  <div class="node" style="left:260px; top:390px;">
+    <div class="port in"></div><div class="port out"></div>
+    <div class="hd"><span class="dot" style="background:var(--accent)"></span> leaf-c <span class="badge">STRIP 3+1</span></div>
+    <div class="bd">
+      <div class="kv"><span>members</span><b>4× HDD 8TB</b></div>
+      <div class="kv"><span>parity</span><b>M = 1</b></div>
+      <div class="kv"><span>λ cc (shock)</span><b>1e-7 /h</b></div>
+      <div class="kv"><span>usable</span><b>24 TB</b></div>
+    </div>
+  </div>
+
+  <!-- top pool (selected) -->
+  <div class="node sel" style="left:550px; top:180px;">
+    <div class="port in"></div><div class="port out"></div>
+    <div class="hd"><span class="dot" style="background:var(--accent)"></span> vault <span class="badge">SPLIT 2+1</span></div>
+    <div class="bd">
+      <div class="kv"><span>members</span><b>leaf-a, leaf-b, leaf-c</b></div>
+      <div class="kv"><span>N / M</span><b>2 / 1</b></div>
+      <div class="kv"><span>rebuild bw / member</span><b>150 MB/s</b></div>
+      <div class="kv"><span>T_op / T_swap / T_proc</span><b>12h / 10m / 48h</b></div>
+      <div class="kv"><span>usable</span><b>48 TB</b></div>
+    </div>
+  </div>
+
+  <!-- output node -->
+  <div class="node out-node" style="left:840px; top:60px; width:230px;">
+    <div class="port in"></div>
+    <div class="hd"><span class="dot" style="background:var(--accent2)"></span> Result <span class="badge" style="background:rgba(126,226,168,.15); color:var(--accent2)">OUTPUT</span></div>
+    <div class="bd">
+      <div class="kv"><span>usage</span><b>40 / 48 TB</b></div>
+      <div class="kv"><span>workload</span><b>200 / 50 MB/s</b></div>
+      <div class="kv"><span>avg file</span><b>8 MB</b></div>
+      <div class="kv"><span>E[lost] @5y</span><b class="good">0.11 TB</b></div>
+      <div class="kv"><span>P(any loss)</span><b>2.1 %</b></div>
+      <svg width="200" height="86" style="margin-top:8px">
+        <line x1="0" y1="76" x2="200" y2="76" stroke="var(--line)"/>
+        <line x1="0" y1="10" x2="0" y2="76" stroke="var(--line)"/>
+        <path d="M0,76 C 60,75 110,70 150,58 S 195,30 200,20" fill="none" stroke="var(--accent)" stroke-width="2"/>
+        <path d="M0,76 C 70,76 130,73 170,66 S 195,55 200,48" fill="none" stroke="var(--accent2)" stroke-width="2" stroke-dasharray="4 3"/>
+        <text x="6" y="14" font-size="9" fill="var(--muted)">E[lost] TB</text>
+        <text x="150" y="88" font-size="9" fill="var(--muted)">5 y</text>
+      </svg>
+      <div class="kv" style="margin-top:4px"><span style="color:var(--accent)">━ rigorous</span><span style="color:var(--accent2)">╌ partial (v2)</span></div>
+    </div>
+  </div>
+
+  <!-- optimizer modal -->
+  <div class="modal">
+    <div class="card">
+      <h2>✦ Auto-optimize <span class="tag">feasible: 1,284 configs · evaluated: 1,284</span></h2>
+      <div class="grid">
+        <div class="field"><label>Store ≥</label><input value="40 TB"></div>
+        <div class="field"><label>Horizon</label><input value="5 years"></div>
+        <div class="field"><label>Objective</label><select><option>E[lost bytes]</option><option>P(any loss)</option></select></div>
+        <div class="field"><label>Workload R</label><input value="200 MB/s"></div>
+        <div class="field"><label>Workload W</label><input value="50 MB/s"></div>
+        <div class="field"><label>Depth</label><select><option>≤ 2 layers</option><option>≤ 3 layers</option></select></div>
+      </div>
+      <table>
+        <tr><th>#</th><th>Design</th><th>E[lost] @5y</th><th>P(loss)</th><th>Usable</th><th>Bottleneck</th></tr>
+        <tr class="win"><td>1</td><td>3× strip(3+1) → split(2,1) <span class="tag">on canvas</span></td><td><b>0.11 TB</b></td><td>2.1 %</td><td>48 TB ✓</td><td class="why">leaf disks 71% bw during rebuild</td></tr>
+        <tr><td>2</td><td>2× strip(5+1) → concat</td><td>0.19 TB</td><td>4.4 %</td><td>80 TB ✓</td><td class="why">parity rebuild 2.4× slower under load</td></tr>
+        <tr><td>3</td><td>6× mirror → strip(5,0)</td><td>0.22 TB</td><td>1.7 %</td><td>48 TB ✓</td><td class="why">P(loss) best, E[lost] worse</td></tr>
+      </table>
+      <div class="foot">
+        <button class="ghost">Show curve overlay</button>
+        <button>Apply #1 → canvas</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- RIGHT: selected node properties -->
+<aside class="props">
+  <h3>Pool · vault</h3>
+  <div class="crumb">top-level · SPLIT (file-style erasure, coarse)</div>
+  <div class="field"><label>Strategy</label><select><option>split (N,M)</option><option>strip (D,M)</option><option>concat</option></select></div>
+  <div class="field"><label>N data / M parity</label><input value="2 / 1"></div>
+  <div class="field"><label>λ common-cause</label><input value="1e-7 /h"></div>
+  <div class="field"><label>Rebuild bw / member</label><input value="150 MB/s"></div>
+  <div class="field"><label>T_op (human)</label><input value="12 h"></div>
+  <div class="field"><label>T_swap (spare)</label><input value="10 min"></div>
+  <div class="field"><label>T_proc (buy)</label><input value="48 h"></div>
+  <h4>Node preview (standalone)</h4>
+  <div class="mini-metrics">
+    <div class="mm"><div class="v good">0.11 TB</div><div class="k">E[lost] @5y</div></div>
+    <div class="mm"><div class="v">2.1 %</div><div class="k">P(any loss)</div></div>
+    <div class="mm"><div class="v warn">×1.9</div><div class="k">rebuild slowdown</div></div>
+    <div class="mm"><div class="v">48 TB</div><div class="k">usable</div></div>
+  </div>
+  <div class="note">Rebuild bandwidth shared with workload (200 MB/s in): leaf rebuilds run at 79 MB/s → exposure window ×1.9 vs idle pool.</div>
+</aside>
+
+</div>
+</body>
+</html>
