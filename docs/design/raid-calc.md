@@ -1,6 +1,6 @@
 # RAID Calculator — Design
 
-Status: draft v2 (2026-02-05, agent synthesis from user discussion; fresh-context review integrated — see `.scratch/01-raid-calc/evidence/review-01.md`). Target form: single-file HTML tool, all computation client-side.
+Status: draft v3 (2026-02-05, agent synthesis from user discussion; two fresh-context review rounds integrated — see `.scratch/01-raid-calc/evidence/`). Sibling docs: optimizer.md (auto-optimize), ui.md (interface), architecture.md (build/modules). Target form: single-file HTML tool, all computation client-side.
 
 ## 1. Purpose
 
@@ -26,7 +26,7 @@ Non-goals (v1; revisit on demand):
 
 ### 3.1 Disk (leaf, physical)
 
-Params: capacity `C`; base die rate `λ0` (per unit time); read die rate `λr`, write die rate `λw` (hazard contributed per unit of read/write IO rate; IO rates measured in bytes per unit time); URE rate `u` (probability per byte read that the read returns unrecoverable — disk stays healthy). Total hazard `λ(t) = λ0 + read_rate(t)·λr + write_rate(t)·λw`. Disk states: alive / dead (full-disk sudden death). All waits are mean-matched exponential — the whole system is a CTMC (see 3.5).
+Params: capacity `C`; base die rate `λ0` (per unit time); read die rate `λr`, write die rate `λw` (hazard contributed per unit of read/write IO rate; IO rates measured in bytes per unit time); URE rate `u` (probability per byte read that the read returns unrecoverable — disk stays healthy); read bandwidth, write bandwidth (bytes/s — used by workload feasibility and rebuild contention, see 3.5). IOPS/latency modeling deferred to v2 (random small IO needs queueing). Total hazard `λ(t) = λ0 + read_rate(t)·λr + write_rate(t)·λw`. Disk states: alive / dead (full-disk sudden death). All waits are mean-matched exponential — the whole system is a CTMC (see 3.5).
 
 ### 3.2 Strategies
 
@@ -43,6 +43,8 @@ Usage rule (applies recursively): for strip / split / strip-split, used bytes ar
 
 Every physical disk belongs to exactly one leaf pool — sharing is forbidden (shared disks would correlate child states). Composition is **exact, not mean-field**: the parent's state is the tuple of its members' lumped child states. For strategies with interchangeable members (strip / split / strip-split with identical member models) the tuple collapses to per-state member counts (compositions — small state space); concat and heterogeneous-member pools keep the ordered tuple (exact, exponential in member count — keep member counts modest, ≤ ~8–10 per pool). Common-cause shocks exist **only at leaf pools** in v1 (physical realism: enclosure, power, batch); a parent-level shock across leaf pools is a future extension requiring the joint space.
 
+**Spare-sharing clusters**: disk-kind spare inventory is a global, user-configured count per kind (hot spares are automatic — pools never configure their own; surplus disks are simply discarded). Pools that use the same disk kind therefore share inventory and are **solved jointly as one cluster** (product space of their member-state tuples plus the shared spare-count dimension — still small); pools with disjoint disk kinds compose independently.
+
 ### 3.4 Usage & weighting
 
 Usage ratio `u` is constant over time, given at top level, distributed by each strategy's placement: parent distributes `u` across members; each member recursively distributes its own share. Every loss event is weighted by the victim's share of *initial* used bytes. Consequences surfaced in the UI: concat + low usage = most member deaths are free (but still consume spares); strip = every death touches everything.
@@ -52,8 +54,8 @@ Usage ratio `u` is constant over time, given at top level, distributed by each s
 On member death (individual or leaf-pool shock):
 1. **Degraded exposure** — pool runs with reduced redundancy; further deaths during this window are the dominant loss mechanism.
 2. **Operator overhead** — exponential wait, mean `T_op` (notice, decide, source, physically swap).
-3. **Swap** — if the dead disk's model has a spare in pool inventory (keyed per disk model): quick swap, mean `T_swap`. If empty (including when a shock demands more spares than stocked): procurement wait, mean `T_proc`, then swap.
-4. **Rebuild** — completes at rate `1/T_rebuild(config, state)` (mean-matched exponential; `T_rebuild` itself is **computed**, never input: bytes to reconstruct ÷ rebuild bandwidth, reads only used data via the composed read-path map). Rebuild bandwidth is defined **per member**; parent and child rebuilds proceed independently and concurrently, each consuming their own layer's bandwidth. During rebuild: survivor hazard jumps via their IO terms (`λr` on rebuild reads), and survivor reads carry URE hazard `u`. **URE absorption is a rate correction, not per-stripe tracking**: effective stripe-corruption rate during rebuild = `u × survivor byte-read rate × (1 − a)` where `a` is the per-strategy absorption factor (0 for M=1 — a URE is fatal to that stripe; 1 for M≥2 with a single dead member — the stripe group still has spare parity).
+3. **Swap** — if the dead disk's kind has a spare in the **global per-kind inventory** (hot spares are automatic): quick swap, mean `T_swap`. If empty (including when a shock demands more spares than stocked): procurement wait, mean `T_proc`, then swap.
+4. **Rebuild** — completes at rate `1/T_rebuild(config, state)` (mean-matched exponential; `T_rebuild` itself is **computed**, never input: bytes to reconstruct ÷ effective rebuild bandwidth, reads only used data via the composed read-path map). **Contention model** (no queueing): effective rebuild bandwidth per surviving member = member bandwidth − per-disk workload IO share during rebuild (from the strategy fan-out); a concat rebuild is pair-limited (source read + spare write). Toggle: contention on/off (off = a dedicated rebuild-bandwidth parameter). Parent and child rebuilds proceed independently and concurrently, each consuming their own layer's effective bandwidth. During rebuild: survivor hazard jumps via their IO terms (`λr` on rebuild reads), and survivor reads carry URE hazard `u`. **URE absorption is a rate correction, not per-stripe tracking**: effective stripe-corruption rate during rebuild = `u × survivor byte-read rate × (1 − a)` where `a` is the per-strategy absorption factor (0 for M=1 — a URE is fatal to that stripe; 1 for M≥2 with a single dead member — the stripe group still has spare parity).
 
 All waits (`T_op`, `T_swap`, `T_proc`, rebuild) are mean-matched exponentials — a declared approximation; real durations are more deterministic, which second-order affects exposure accumulation.
 
@@ -88,9 +90,10 @@ Single-file HTML (built by bundling `core/` + `ui/` modules — build step, then
 ## 6. Parameter summary
 
 | Object | Params |
-|---|---|
-| Disk model | capacity, λ0, λr, λw, URE rate |
-| Leaf pool | strategy, members, D/M or N/M, λ_cc, rebuild bandwidth (per member), T_op, T_swap, T_proc, spares (per member model) |
+| --- | --- |
+| Disk model | capacity, λ0, λr, λw, URE rate, read bw, write bw |
+| Leaf pool | strategy, members, D/M or N/M, λ_cc |
+| Global | spares (per disk kind), T_op, T_swap, T_proc, time unit |
 | Workload (top) | usage ratio, avg read rate, avg write rate (bytes/unit time), avg file size |
 | Output | E[lost fraction](t), P(any loss)(t), mode 1 (+2 if in scope), MC toggle |
 
@@ -102,6 +105,8 @@ Resolved:
 - All waits mean-matched exponential (§3.5); P(any loss) via killed CTMC (§3.7); MC validates the solver, not the model (§3.8).
 - Shocks leaf-pool-only in v1 (§3.3); composition exact with symmetry collapse (§3.3).
 - λr/λw kept separate (user-specified parameters; workload write modulation matters for SSD wear even though rebuild is read-only).
+- **Spares: global per-kind count, automatic, surplus disks discarded** (user decision). Pools sharing a disk kind are solved as one joint spare-sharing cluster (§3.3).
+- **Contention: leftover-bandwidth model** — effective rebuild bandwidth = member bandwidth − workload IO share; contention on/off toggle (§3.5). Per-disk read/write bandwidth added to disk params; IOPS deferred (§3.1).
 
 Open (user-gated):
 - D1 **Spare inventory scope** — per-pool-per-model (v1 proposal: keeps child pools independent) vs global-per-model (realistic procurement pooling; couples pools sharing a model — needs joint state or approximation). Recommend per-pool v1, global as extension.
