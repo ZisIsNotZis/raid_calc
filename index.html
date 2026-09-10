@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>raid_calc</title>
+<style>
+  :root{
+    --bg:#14161a; --panel:#1d2026; --panel2:#232730; --line:#2e333d;
+    --text:#d7dae0; --muted:#8b909a; --accent:#4f8cff; --accent2:#7ee2a8;
+    --warn:#e8b45a; --bad:#e57373; --link:#4a5160;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{background:var(--bg); color:var(--text); font:13px/1.45 -apple-system,"Segoe UI",Roboto,sans-serif; height:100vh; overflow:hidden;}
+  #app{display:grid; grid-template-rows:46px 1fr; grid-template-columns:230px 1fr 300px; height:100vh;}
+  header{grid-column:1/4; display:flex; align-items:center; gap:8px; padding:0 12px; background:var(--panel); border-bottom:1px solid var(--line);}
+  header h1{font-size:14px; font-weight:600; margin-right:8px; white-space:nowrap;}
+  .spacer{flex:1;}
+  button{background:var(--accent); border:0; color:#fff; border-radius:7px; padding:6px 12px; font-size:12.5px; font-weight:600; cursor:pointer;}
+  button.ghost{background:var(--panel2); border:1px solid var(--line); color:var(--text); font-weight:500;}
+  button.magic{background:linear-gradient(100deg,#7b5cff,#4f8cff);}
+  button.tiny{padding:2px 7px; font-size:11px;}
+  button.danger{color:var(--bad);}
+  button.disabled{opacity:.4; pointer-events:none;}
+
+  .side{background:var(--panel); border-right:1px solid var(--line); padding:12px; overflow:auto;}
+  .side h3{font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:14px 0 8px;}
+  .side h3:first-child{margin-top:0;}
+  .pal{display:flex; align-items:center; gap:8px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:6px; cursor:pointer; font-size:12.5px;}
+  .pal:hover{border-color:var(--accent);}
+  .dot{width:9px; height:9px; border-radius:50%; flex:none;}
+  .inv,.inventory{background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:9px 10px; margin-bottom:6px; font-size:12px;}
+  .inv .row,.inventory .row{display:flex; justify-content:space-between; align-items:center; padding:2px 0;}
+  .num{color:var(--accent2); font-weight:600;}
+  .sub{color:var(--muted); font-size:11px;}
+
+  .canvas{position:relative; overflow:auto; background:radial-gradient(circle, #20242c 1px, transparent 1px) 0 0/22px 22px, var(--bg);}
+  .canvas svg.wires{position:absolute; inset:0; width:100%; height:100%; pointer-events:none;}
+  .node{position:absolute; width:210px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; box-shadow:0 6px 18px rgba(0,0,0,.35); font-size:12px; cursor:pointer;}
+  .node.sel{border-color:var(--accent); box-shadow:0 0 0 1.5px var(--accent), 0 6px 18px rgba(0,0,0,.4);}
+  .node .hd{display:flex; align-items:center; gap:7px; padding:7px 11px; border-bottom:1px solid var(--line); font-weight:600; white-space:nowrap; overflow:hidden;}
+  .node .hd .badge{margin-left:auto; font-size:10px; font-weight:700; letter-spacing:.04em; border-radius:5px; padding:2px 6px; background:rgba(79,140,255,.15); color:var(--accent); flex:none;}
+  .node .bd{padding:7px 11px; color:var(--muted);}
+  .node .bd .kv{display:flex; justify-content:space-between; gap:8px; padding:1.5px 0;}
+  .node .bd .kv b{color:var(--text); font-weight:500; text-align:right;}
+  .node .port{position:absolute; width:11px; height:11px; border-radius:50%; background:var(--bg); border:2px solid var(--accent); top:24px; z-index:5;}
+  .node .port.in{left:-6px;} .node .port.out{right:-6px; border-color:var(--accent2);}
+  .node .port:hover{border-color:var(--accent2);}
+  .node.out-node .hd{background:rgba(126,226,168,.08);}
+  .float-btn{position:absolute; top:8px; right:8px; z-index:6;}
+
+  .props{background:var(--panel); border-left:1px solid var(--line); padding:12px; overflow:auto;}
+  .props h3{font-size:12.5px; margin-bottom:2px;}
+  .props .crumb{font-size:11px; color:var(--muted); margin-bottom:10px;}
+  .field{margin-bottom:7px;}
+  .field label{display:block; font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:2px;}
+  .field input,.field select{width:100%; background:var(--panel2); border:1px solid var(--line); color:var(--text); border-radius:6px; padding:5px 8px; font-size:12px;}
+  .field input.invalid{border-color:var(--bad);}
+  .props h4{font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin:14px 0 8px;}
+  .form-error{background:rgba(229,115,115,.1); border:1px solid rgba(229,115,115,.4); color:var(--bad); border-radius:8px; padding:7px 9px; font-size:11.5px; margin-bottom:9px;}
+  .note{background:rgba(232,180,90,.08); border:1px solid rgba(232,180,90,.3); color:var(--warn); border-radius:8px; padding:8px 10px; font-size:11.5px; margin-top:12px;}
+  .mini-metrics{display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:10px 0;}
+  .mm{background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:7px 9px;}
+  .mm .v{font-size:14px; font-weight:700;}
+  .mm .k{font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em;}
+  .members-list .member-row{display:flex; align-items:center; gap:6px; padding:3px 0; font-size:12px;}
+  .members-list .member-row span{flex:1;}
+
+  .modal{position:fixed; inset:0; background:rgba(10,12,16,.6); display:flex; align-items:center; justify-content:center; z-index:50;}
+  .modal .card{width:560px; max-height:80vh; overflow:auto; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:18px; box-shadow:0 20px 60px rgba(0,0,0,.5);}
+  .modal h2{font-size:14px; margin-bottom:12px; display:flex; align-items:center; gap:8px;}
+  table{width:100%; border-collapse:collapse; font-size:12px;}
+  th{color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; text-align:left; padding:5px 6px; border-bottom:1px solid var(--line);}
+  td{padding:6px 6px; border-bottom:1px solid var(--line);}
+  tr.win{background:rgba(126,226,168,.06);}
+  .why{color:var(--muted); font-size:11px;}
+  .modal .foot{display:flex; gap:8px; justify-content:flex-end; margin-top:14px;}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+  import { createApp } from "./src/ui/main.js";
+  const root = document.getElementById("app");
+  createApp(root);
+</script>
+</body>
+</html>
