@@ -1,6 +1,6 @@
 # Ticket: 10-optimizer
 
-- **Status:** claimed
+- **Status:** done
 - **Need-review:** yes (behavior changes)
 
 ## Issue
