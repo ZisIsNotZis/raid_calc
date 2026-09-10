@@ -1,5 +1,38 @@
 # raid_calc
 
-Hierarchical storage reliability calculator: model disks with statistical failure rates, compose them into arbitrarily nested pools (concat / strip / split / strip-split), and get the mathematical expectation of data loss vs time — analytic CTMC numerics, with Monte Carlo as cross-check.
+Hierarchical storage reliability calculator: model disks with statistical failure rates, compose them into arbitrarily nested pools (concat / strip / split / strip-split), and get the **mathematical expectation of data loss vs time** — exact CTMC numerics, with Monte Carlo as cross-check.
 
-Status: design phase. See [docs/design/raid-calc.md](docs/design/raid-calc.md).
+## Quickstart
+
+```bash
+npm install
+npm run build        # bundles src/ into the single-file artifact
+```
+
+Open `raid-calc.html` in any browser — no server, no network, fully offline. (A prebuilt copy is committed; `npm run build` regenerates it.)
+
+## What it does
+
+- **Model**: disks with base + read/write die rates, URE per byte read, R/W bandwidth; pools as concat, strip(D,M), split(N,M), strip-split(N,M) — nested arbitrarily into logical disks.
+- **Engine**: exact CTMC composition (no mean-field), computed rebuild times under bandwidth contention with the workload, URE hazard on bulk rebuild reads, common-cause shocks, global per-kind hot spares, operator/procurement delays.
+- **Two accounting modes**: rigorous (any corruption = file lost) and partial (chunks lost beyond parity — "kind of usable").
+- **Outputs**: E[lost data](t) and P(any loss)(t) per top-level pool; per-node standalone previews; deterministic auto-optimizer (greedy + local search under feasibility gates: capacity, per-disk bandwidth, spare inventory).
+- **Monte Carlo cross-check**: Gillespie simulation of the same semantics, validating the solver.
+
+## Status / limitations (v1)
+
+- Solver perf: large joint state spaces (>~100k states) at multi-year horizons take minutes — the optimizer skips them (disclosed, `skippedLarge`); solver speedup is the top follow-up.
+- IOPS/latency, scrubbing, aging curves, operator error: non-goals for v1 (see docs/design/raid-calc.md).
+- UI: canvas + panels are functional; bundle is the deliverable (ticket 13 smoke test = manual browser open).
+
+## Docs
+
+Design truth lives in `docs/design/`: `raid-calc.md` (model), `optimizer.md`, `ui.md`, `architecture.md`. Tickets and working state in `.scratch/`.
+
+## Development
+
+```bash
+npm test             # vitest: closed-form validations, worked examples, MC agreement, UI logic
+npm run demo         # CLI demo: evaluates two configs, prints curves
+npm run build        # esbuild -> raid-calc.html
+```

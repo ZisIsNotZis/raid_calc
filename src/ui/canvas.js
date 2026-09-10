@@ -390,7 +390,7 @@ export function renderCanvas({
       kv(
         bd,
         "workload",
-        `${(config.workload?.readBps / 1e6 ?? 0).toFixed(0)} / ${(config.workload?.writeBps / 1e6 ?? 0).toFixed(0)} MB/s`,
+        `${((config.workload?.readBps ?? 0) / 1e6).toFixed(0)} / ${((config.workload?.writeBps ?? 0) / 1e6).toFixed(0)} MB/s`,
       );
       kv(bd, "horizon", `${config.workload?.horizonY ?? 0} y`);
       // chart containers filled by results.renderOutputCharts (post-render hook)

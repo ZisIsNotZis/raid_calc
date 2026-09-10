@@ -6,9 +6,11 @@
   "description": "Hierarchical storage reliability calculator — mathematical expectation of data loss vs time",
   "scripts": {
     "test": "vitest run",
-    "demo": "node demo/demo.js"
+    "demo": "node demo/demo.js",
+    "build": "node scripts/build.mjs"
   },
   "devDependencies": {
+    "esbuild": "^0.28.2",
     "vitest": "^3.0.0"
   }
 }
