@@ -105,11 +105,12 @@ function buildErasureLeaf(node, ctx, kind, members, memberUsed) {
   );
   const rebThroughput =
     stages.length > 0 ? memberUsed[0] / 3600 / stages[stages.length - 1] : 0; // B/s
-  const ureEventsPerHour = kind.ure * rebThroughput * (N - 1) * 3600; // survivor reads total
-  // per-URE-event cost: the blocked chunk belonged to data with prob N/(N+M); the group
+  // read-path per §3.2: strip reads N-1 survivors per rebuilt byte; split/strip-split read N
+  const readsPerByte = node.strategy === "strip" ? N - 1 : N - node.m;
+  const ureEventsPerHour = kind.ure * rebThroughput * readsPerByte * 3600; // survivor reads total
+  // per-URE-event cost: the blocked chunk belonged to data with prob (N-m)/N; the group
   // holds one avg file (span approximation, raid-calc.md §3.7)
-  const perEvent1 =
-    (N / N) * (ctx.avgFileBytes / ctx.usedBytes) * (N / N) * (N / (N + node.m));
+  const perEvent1 = ((N - node.m) / N) * (ctx.avgFileBytes / ctx.usedBytes);
   const perEvent2 = ctx.avgFileBytes / N / ctx.usedBytes;
 
   states.forEach((c, s) => {
@@ -152,11 +153,17 @@ function buildErasureLeaf(node, ctx, kind, members, memberUsed) {
       next[restores ? 0 : ae]++;
       add(s, index.get(keyOf(next)), c[last] * (1 / stages[stages.length - 1]));
     }
-    // URE during rebuild: corrupts one chunk unless the group still has spare parity
+    // URE during rebuild: corrupts one chunk unless the group still has spare parity;
+    // scales with the number of members rebuilding. Suppressed in fully-lost states for
+    // mode 1 (already saturated — keeps E[mode 1] ≤ 1); mode 2 keeps accumulating.
     if (rebuilding && ureEventsPerHour > 0) {
       const absorbed = node.m - d >= 1 ? 1 : 0;
-      lossRate1[s] = ureEventsPerHour * (1 - absorbed) * perEvent1;
-      lossRate2[s] = ureEventsPerHour * (1 - absorbed) * perEvent2;
+      const occupancy = c[last];
+      if (lostFraction[s] < 1 - 1e-12)
+        lossRate1[s] =
+          ureEventsPerHour * occupancy * (1 - absorbed) * perEvent1;
+      lossRate2[s] =
+        ureEventsPerHour * occupancy * (1 - absorbed) * perEvent2;
     }
     // common-cause shock: all members die at once
     if (node.lambdaCC > 0) add(s, shockTarget, node.lambdaCC);
@@ -173,7 +180,7 @@ function buildErasureLeaf(node, ctx, kind, members, memberUsed) {
     ),
     usedBytes: ctx.usedBytes,
     capacityBytes: N * kind.capacityTB * 1e12,
-    usableBytes: N * kind.capacityTB * 1e12 * (node.d / (node.d + node.m)),
+    usableBytes: N * kind.capacityTB * 1e12 * ((N - node.m) / N),
   };
 }
 
@@ -371,7 +378,7 @@ function buildParentMachine(node, ctx, stateBudget) {
     );
     if (child.lostFraction.some((f) => f > 1e-12 && f < 1 - 1e-12)) {
       throw new BuildError(
-        "partially-loss child under a parent is not supported until mode-2 span accounting (ticket 06) — use parity-style children under parents",
+        "partially-loss child under a parent is not supported (mode-2 nesting uses child-binary semantics, raid-calc.md §3.7) — use parity-style children whose mode-1 loss is binary",
       );
     }
     child.memberLost = Uint8Array.from(child.lostFraction, (f) =>
@@ -386,6 +393,9 @@ function buildParentMachine(node, ctx, stateBudget) {
     strategy.symmetricLoss === true,
   );
   const lostFraction = new Float64Array(product.nStates);
+  const lostFraction2 = new Float64Array(product.nStates);
+  const lossRate1 = new Float64Array(product.nStates);
+  const lossRate2 = new Float64Array(product.nStates);
   for (let s = 0; s < product.nStates; s++) {
     const st = product.states[s];
     let flags;
@@ -404,12 +414,40 @@ function buildParentMachine(node, ctx, stateBudget) {
       ctx.usedBytes,
       node,
     );
+    lostFraction2[s] = strategy.lossFraction2(
+      flags,
+      memberUsed,
+      ctx.usedBytes,
+      node,
+    );
+    // child URE rate terms propagate weighted by the child's share of parent used bytes;
+    // nested mode-2 beyond that uses child-binary semantics (disclosed approximation,
+    // raid-calc.md §3.7)
+    for (let i = 0; i < node.members.length; i++) {
+      const child = machines[i];
+      const w = ctx.usedBytes > 0 ? memberUsed[i] / ctx.usedBytes : 0;
+      if (!child.lossRate1 && !child.lossRate2) continue;
+      if (product.identical) {
+        for (let a = 0; a < product.k; a++) {
+          if (st[a] === 0) continue;
+          lossRate1[s] += (child.lossRate1?.[a] || 0) * st[a] * w;
+          lossRate2[s] += (child.lossRate2?.[a] || 0) * st[a] * w;
+        }
+      } else {
+        const si = st[i];
+        lossRate1[s] += (child.lossRate1?.[si] || 0) * w;
+        lossRate2[s] += (child.lossRate2?.[si] || 0) * w;
+      }
+    }
   }
   const usable = machines.reduce((a, m) => a + (m.usableBytes ?? 0), 0);
   return {
     nStates: product.nStates,
     transitions: product.transitions,
     lostFraction,
+    lostFraction2,
+    lossRate1,
+    lossRate2,
     initialState: product.initialState,
     usedBytes: ctx.usedBytes,
     capacityBytes: caps.reduce((a, b) => a + b, 0),

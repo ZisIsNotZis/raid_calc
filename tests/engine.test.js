@@ -213,6 +213,44 @@ describe("composition", () => {
     });
   });
 
+  it("parent propagates child URE rate terms (mode 1 and mode 2 differ from URE-free base)", { timeout: 120000 }, () => {
+    const ctx = CTX({ ctx: { usedBytes: 8e12 } });
+    const child = { node: "pool", strategy: "split", n: 2, m: 1, lambdaCC: 0, members: [{ node: "kind", kind: "d", count: 3 }] };
+    const parent = { node: "pool", strategy: "strip", d: 1, m: 1, lambdaCC: 0, members: [child, child] };
+    const withUre = buildPoolMachine(parent, { ...ctx, kinds: { d: { ...ctx.kinds.d, ure: 1e-9 } } }, 1e6);
+    const base = buildPoolMachine(parent, ctx, 1e6);
+    expect(withUre.lossRate1.some((r) => r > 0)).toBe(true); // P0 regression: rates reach the parent
+    const cUre = lossCurves(withUre, [0, 1e5]);
+    const cBase = lossCurves(base, [0, 1e5]);
+    expect(cUre.mode1[1]).toBeGreaterThan(cBase.mode1[1]);
+    expect(cUre.mode2[1]).toBeGreaterThan(cBase.mode2[1]);
+    expect(cUre.mode1[1]).toBeGreaterThan(cUre.mode2[1]); // rigorous >= partial
+  });
+
+  it("mode-1 expectation never exceeds 1 even with heavy URE", { timeout: 120000 }, () => {
+    const ctx = CTX({ ctx: { usedBytes: 4e12 } });
+    const machine = buildPoolMachine(
+      { node: "pool", strategy: "strip", d: 3, m: 1, lambdaCC: 0, members: [{ node: "kind", kind: "d", count: 4 }] },
+      { ...ctx, kinds: { d: { ...ctx.kinds.d, ure: 1e-8 } } }, 1e6,
+    );
+    const { mode1 } = lossCurves(machine, [0, 5e4, 1e5, 5e5]);
+    mode1.forEach((v) => expect(v).toBeLessThanOrEqual(1 + 1e-9));
+  });
+
+  it("strip-split(2,1) worked examples match split semantics (disclosed convergence, §3.7)", () => {
+    const ctx = CTX({ ctx: { usedBytes: 12e12 } });
+    const ss = { node: "pool", strategy: "strip-split", n: 2, m: 1, lambdaCC: 0, members: [{ node: "kind", kind: "d", count: 3 }] };
+    const m = buildPoolMachine(ss, ctx, 1e6);
+    const states = [];
+    const rec = (rem, idx, acc) => { if (idx === 2) { states.push(acc.concat(rem)); return; } for (let c = 0; c <= rem; c++) rec(rem - c, idx + 1, acc.concat(c)); };
+    rec(3, 0, []);
+    states.forEach((c, i) => {
+      const dead = 3 - c[0];
+      expect(m.lostFraction[i]).toBe(dead > 1 ? 1 : 0);
+      expect(m.lostFraction2[i]).toBeCloseTo(Math.max(0, dead - 1) / 3, 12);
+    });
+  });
+
   it("common-cause shock: lambdaCC-only pool loses at exactly lambdaCC", () => {
     const ctx = CTX({ ctx: { usedBytes: 4e12 } });
     const machine = buildPoolMachine(
@@ -292,7 +330,7 @@ describe("composition", () => {
     // usage spanning both concat members: 10TB over 2 children -> 5TB each -> child placement [4TB, 1TB]
     expect(() =>
       buildPoolMachine(parent, CTX({ ctx: { usedBytes: 10e12 } }), 1e6),
-    ).toThrow(/ticket 06/);
+    ).toThrow(/mode-2 nesting/);
   });
 
   it("enforces the state-space budget", () => {
