@@ -1,6 +1,6 @@
 # Ticket: 07-io-feasibility
 
-- **Status:** claimed
+- **Status:** done
 - **Need-review:** yes (behavior changes)
 
 ## Issue
