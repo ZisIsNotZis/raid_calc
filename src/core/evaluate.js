@@ -11,10 +11,16 @@ export const STATE_BUDGET = 1e6;
 
 export function timePoints(horizonY, nPoints = 101) {
   const horizonH = horizonY * HOURS_PER_YEAR;
-  return Array.from({ length: nPoints }, (_, i) => (i / (nPoints - 1)) * horizonH);
+  return Array.from(
+    { length: nPoints },
+    (_, i) => (i / (nPoints - 1)) * horizonH,
+  );
 }
 
-export function evaluate(config, { points = 101, stateBudget = STATE_BUDGET } = {}) {
+export function evaluate(
+  config,
+  { points = 101, stateBudget = STATE_BUDGET } = {},
+) {
   const { usableBytes } = validate(config);
   const usedBytes = config.workload.storeTB * TB;
 
@@ -34,8 +40,8 @@ export function evaluate(config, { points = 101, stateBudget = STATE_BUDGET } = 
   const expectedLostFraction = expectedLossCurve(machine, times);
   const anyLossProb = anyLossCurve(machine, times);
   return {
-    times,                                   // hours
-    expectedLostFraction,                    // fraction of used data (0..1)
+    times, // hours
+    expectedLostFraction, // fraction of used data (0..1)
     expectedLostBytes: expectedLostFraction.map((f) => f * usedBytes),
     anyLossProb,
     usedBytes,

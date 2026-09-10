@@ -1,6 +1,6 @@
 # Ticket: 06-erasure-strategies
 
-- **Status:** ready-for-agent
+- **Status:** claimed
 - **Need-review:** yes (behavior changes)
 
 ## Issue

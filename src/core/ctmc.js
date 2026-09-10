@@ -9,14 +9,28 @@
 export function buildKilled(machine) {
   const n = machine.nStates;
   const lf = new Float64Array(2 * n);
-  for (let s = 0; s < n; s++) { lf[s] = machine.lostFraction[s]; lf[s + n] = machine.lostFraction[s]; }
+  for (let s = 0; s < n; s++) {
+    lf[s] = machine.lostFraction[s];
+    lf[s + n] = machine.lostFraction[s];
+  }
   const transitions = [];
   for (const t of machine.transitions) {
-    const lossEvent = machine.lostFraction[t.to] > machine.lostFraction[t.from] + 1e-15;
-    transitions.push({ from: t.from, to: lossEvent ? t.to + n : t.to, rate: t.rate });
+    const lossEvent =
+      machine.lostFraction[t.to] > machine.lostFraction[t.from] + 1e-15;
+    transitions.push({
+      from: t.from,
+      to: lossEvent ? t.to + n : t.to,
+      rate: t.rate,
+    });
     transitions.push({ from: t.from + n, to: t.to + n, rate: t.rate });
   }
-  return { nStates: 2 * n, transitions, lostFraction: lf, usedBytes: machine.usedBytes, initialState: machine.initialState ?? 0 };
+  return {
+    nStates: 2 * n,
+    transitions,
+    lostFraction: lf,
+    usedBytes: machine.usedBytes,
+    initialState: machine.initialState ?? 0,
+  };
 }
 
 function buildRows(machine) {
@@ -28,7 +42,8 @@ function buildRows(machine) {
     exit[t.from] += t.rate;
   }
   let maxRate = 0;
-  for (let i = 0; i < exit.length; i++) if (exit[i] > maxRate) maxRate = exit[i];
+  for (let i = 0; i < exit.length; i++)
+    if (exit[i] > maxRate) maxRate = exit[i];
   return { rows, exit, maxRate };
 }
 
@@ -48,7 +63,11 @@ function integrate(machine, times) {
   const n = machine.nStates;
   const p = new Float64Array(n);
   p[machine.initialState ?? 0] = 1;
-  const k1 = new Float64Array(n), k2 = new Float64Array(n), k3 = new Float64Array(n), k4 = new Float64Array(n), tmp = new Float64Array(n);
+  const k1 = new Float64Array(n),
+    k2 = new Float64Array(n),
+    k3 = new Float64Array(n),
+    k4 = new Float64Array(n),
+    tmp = new Float64Array(n);
   const dtStep = maxRate > 0 ? 0.5 / maxRate : Infinity;
   const out = [Array.from(p)];
   for (let i = 1; i < times.length; i++) {
@@ -62,7 +81,8 @@ function integrate(machine, times) {
       applyRows(rows, exit, tmp, k3);
       for (let s = 0; s < n; s++) tmp[s] = p[s] + dt * k3[s];
       applyRows(rows, exit, tmp, k4);
-      for (let s = 0; s < n; s++) p[s] += (dt / 6) * (k1[s] + 2 * k2[s] + 2 * k3[s] + k4[s]);
+      for (let s = 0; s < n; s++)
+        p[s] += (dt / 6) * (k1[s] + 2 * k2[s] + 2 * k3[s] + k4[s]);
       let sum = 0;
       for (let s = 0; s < n; s++) sum += p[s];
       for (let s = 0; s < n; s++) p[s] /= sum;

@@ -16,9 +16,13 @@ export const concat = {
     let remaining = totalUsed;
     for (let i = 0; i < caps.length && remaining > 1e-9; i++) {
       const take = Math.min(caps[i], remaining);
-      out[i] = take; remaining -= take;
+      out[i] = take;
+      remaining -= take;
     }
-    if (remaining > 1e-6) throw new Error("concat placement overflow: usage exceeds total capacity");
+    if (remaining > 1e-6)
+      throw new Error(
+        "concat placement overflow: usage exceeds total capacity",
+      );
     return out;
   },
   // Fill-first: only members holding data lose anything (frontier member included; members beyond it are empty).
@@ -28,7 +32,10 @@ export const concat = {
     return totalUsed > 0 ? lost / totalUsed : 0;
   },
   ioShares(memberUsed, totalUsed) {
-    return memberUsed.map((u) => ({ read: totalUsed > 0 ? u / totalUsed : 0, write: totalUsed > 0 ? u / totalUsed : 0 }));
+    return memberUsed.map((u) => ({
+      read: totalUsed > 0 ? u / totalUsed : 0,
+      write: totalUsed > 0 ? u / totalUsed : 0,
+    }));
   },
 };
 
@@ -39,7 +46,8 @@ export const strip = {
   // params: {d, m}
   placement(totalUsed, caps, params) {
     const n = params.d + params.m;
-    if (caps.length !== n) throw new Error(`strip(${params.d},${params.m}) needs ${n} members`);
+    if (caps.length !== n)
+      throw new Error(`strip(${params.d},${params.m}) needs ${n} members`);
     return even(totalUsed, n); // even spread regardless of usage
   },
   lossFraction(flags, _memberUsed, _totalUsed, params) {
@@ -56,7 +64,9 @@ export const split = {
   name: "split",
   symmetricLoss: true,
   usableFactor: (params) => params.n / (params.n + params.m),
-  placement(totalUsed, _caps, params) { return even(totalUsed, params.n + params.m); },
+  placement(totalUsed, _caps, params) {
+    return even(totalUsed, params.n + params.m);
+  },
   // Mode 1, coarse chunks: a file is corrupted when >M of its chunks are lost; chunks sit on distinct
   // members round-robin. With members exactly n+m, per-file chunk loss == member loss count.
   lossFraction(flags, _memberUsed, _totalUsed, params) {
@@ -73,12 +83,16 @@ export const stripSplit = {
   name: "strip-split",
   symmetricLoss: true,
   usableFactor: (params) => params.n / (params.n + params.m),
-  placement(totalUsed, _caps, params) { return even(totalUsed, params.n + params.m); },
+  placement(totalUsed, _caps, params) {
+    return even(totalUsed, params.n + params.m);
+  },
   lossFraction(flags, _memberUsed, _totalUsed, params) {
     const lost = flags.reduce((a, f) => a + (f ? 1 : 0), 0);
     return lost > params.m ? 1 : 0;
   },
-  rebuildRestoresData() { return true; },
+  rebuildRestoresData() {
+    return true;
+  },
   ioShares(_memberUsed, _totalUsed, params) {
     return even(1, params.n + params.m).map((s) => ({ read: s, write: s }));
   },
