@@ -26,7 +26,7 @@ Infeasible configs are counted and dropped (count shown in UI as "feasible: N / 
 - **Templates, not free-form trees**: leaf pools = set partitions of the disk multiset (identical disks → group-size vectors only, large pruning); each leaf gets a strategy + params (concat / strip(D,M) / split(N,M), sensible M/N ranges); then zero or one top layer (strip / split over the leaf pools, or none). Depth ≤ 2 by default, ≤ 3 optional.
 - **Enumeration caps**: candidate count cap (e.g. 20k) shown in UI; beyond cap, greedy construction + local swaps (swap a disk between pools, change one strategy param). Deterministic tie-breaking (same objective → lexicographic config order) so results are reproducible. **Budget policy**: per-candidate evaluation ≤ ~5 ms; when the sweep exceeds its wall-clock budget, degrade by shrinking the candidate cap first, then depth — never by skipping feasibility gates.
 - **Mirrors are in the search space** as `strip(1,1)` (2 members, 1 data + 1 parity).
-- Strip-split is excluded while D4 (mode-2 scope) is open.
+- Strip-split is in scope (D4 resolved) — same four-function interface; mode-2 span granularity from avg file size.
 
 ## 5. Evaluation & output
 

@@ -13,7 +13,7 @@ Implementation slices (tracer-bullet order, one ticket each in `issues/`):
 
 1. `04-core-schema-strategies` — config schema + concat/strip strategy functions + worked-example tests.
 2. `05-ctmc-solver` — solver + composition + accounting (mode 1) + closed-form validation.
-3. `06-split-strategy` — split(N,M) (strip-split deferred pending D4).
+3. `06-erasure-strategies` — split(N,M) + strip-split(N,M) + mode-2 accounting (D4 resolved: in v1 scope).
 4. `07-io-feasibility` — bandwidth, amplification, contention, effective T_rebuild, slowdown factor.
 5. `08-spare-clusters` — global per-kind spares, joint clusters, state-space budget.
 6. `09-mc-crosscheck` — MC simulator + solver-agreement gate.
@@ -22,4 +22,4 @@ Implementation slices (tracer-bullet order, one ticket each in `issues/`):
 9. `12-ui-results` — output node, charts, comparison overlay, optimize modal wiring.
 10. `13-build-bundle` — esbuild single-file artifact, README quickstart.
 
-Open: D4 (mode 2 / strip-split scope) — user-gated; blocked slices would attach here.
+Open: none — D4 resolved 2026-02-05 (user): mode 2 + strip-split in v1 scope.
