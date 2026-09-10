@@ -16,3 +16,7 @@ Design refs: docs/design/raid-calc.md, optimizer.md, ui.md, architecture.md; sli
 ## Comments
 
 - 2026-02-05 agent (pi, terra/sol): created from reviewed impl plan (v2 re-slice: 04 split into 04+05 per review sizing advice; UI canvas parallelizable; chain renumbered).
+
+## Comments (review follow-ups from tickets 04/05)
+
+- 2026-02-05 agent (pi, terra/sol): review hand-off — bare disk as a parent member is a permanent-loss stub (returns alive-empty, never restores redundancy); spare-cluster model here should make mirror-of-bare-disks restore properly. Also: leaf/collapsed budget guards exist since 04; the cluster-level budget should reuse them.
