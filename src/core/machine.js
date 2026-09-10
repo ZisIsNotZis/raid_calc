@@ -394,6 +394,10 @@ export function buildProduct(machines, stateBudget, allowCollapse = true) {
 }
 
 function buildParentMachine(node, ctx, stateBudget) {
+  // NOTE (v1 scope): parent-level rebuild is not modeled as dynamics (a lost child is
+  // permanent loss until ticket 08's spare model); each level contends only with workload.
+  // Cross-level concurrent-rebuild contention (§3.5's per-disk budget across levels) lands
+  // with ticket 08's spare/cluster work.
   const strategy = strategies[node.strategy];
   if (node.lambdaCC > 0) {
     throw new BuildError(
@@ -416,9 +420,20 @@ function buildParentMachine(node, ctx, stateBudget) {
       machine.usableBytes = kind.capacityTB * 1e12;
       return machine;
     }
+    // scale the workload by this member's IO share before recursing (the parent's fan-out
+    // decides how much of the top-level rate each member sees)
+    const wlShare = strategy.ioShares(memberUsed, ctx.usedBytes, node)[i];
     const child = buildPoolMachine(
       m,
-      { ...ctx, usedBytes: memberUsed[i] },
+      {
+        ...ctx,
+        usedBytes: memberUsed[i],
+        workload: {
+          ...ctx.workload,
+          readBps: ctx.workload.readBps * wlShare.read,
+          writeBps: ctx.workload.writeBps * wlShare.write,
+        },
+      },
       stateBudget,
     );
     if (child.lostFraction.some((f) => f > 1e-12 && f < 1 - 1e-12)) {
@@ -531,6 +546,8 @@ function buildBareDiskMachine(ctx, kind, usedBytes, share) {
     memberLost,
     initialState: ALIVE_FULL,
     usableBytes: usedBytes,
+    rebuildSlowdown: plan.slowdown,
+    bottleneckUtil: plan.utilization,
   };
 }
 

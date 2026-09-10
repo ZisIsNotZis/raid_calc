@@ -251,7 +251,7 @@ describe("composition", () => {
     });
   });
 
-  it("rebuild contention: workload halves leftover bandwidth, lengthening exposure (MTTR doubles)", { timeout: 120000 }, () => {
+  it("rebuild contention: workload leftover reduces rebuild bandwidth (MTTR lengthens, MTTDL matches)", { timeout: 120000 }, () => {
     // RAID5 first-order MTTDL with contended MTTR: survivors read at R = readBW - wl.read
     const lambda = 1e-5, N = 4;
     const readBW = 1.12e8;
@@ -283,6 +283,11 @@ describe("composition", () => {
     // memberUsed = 4e12 at dedicated 5e7 B/s -> tRebuild = 22.2h; no feasibility error despite
     // heavy workload; slowdown reported as 1 (dedicated channel)
     expect(machine.rebuildSlowdown).toBe(1);
+    // regression: the rebuild-exit rate must be the DEDICATED rate 1/22.2h, not contended
+    const exitRate = machine.transitions
+      .filter((t) => t.to === 0 && t.rate > 0)
+      .reduce((a, t) => a + t.rate, 0);
+    expect(exitRate).toBeCloseTo(1 / (4e12 / (5e7 * 3600)), 6); // one rebuilding member exits at 1/tRebuild
   });
 
   it("infeasible workload: per-disk bandwidth exceeded throws", () => {
