@@ -120,7 +120,7 @@ export function fmtSummary(summary) {
 // Per-node standalone preview: evaluate a config whose tree is just that subtree.
 // Debounced by the caller (raid-calc.md §3: the graph doubles as an understanding tool).
 export function previewConfig(config, path) {
-  const preview = JSON.parse(JSON.stringify(config));
+  const preview = structuredClone(config);
   if (path && path.startsWith("kinds.")) {
     const id = path.slice(6);
     preview.tree = { node: "kind", kind: id, count: 1 };
