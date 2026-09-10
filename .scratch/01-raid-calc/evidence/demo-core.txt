@@ -1,0 +1,12 @@
+
+=== RAID5 (4x 8TB, strip 3+1) — store 24TB, usable 24TB, states 70
+year  E[lost TB]   P(any loss)
+1     2.756e+0      11.4819%
+3     7.364e+0      30.6823%
+5     1.097e+1      45.7180%
+
+=== Mirror of two RAID5 pools — store 24TB, usable 24TB, states 2485
+year  E[lost TB]   P(any loss)
+1     9.714e-2      0.4047%
+3     7.705e-1      3.2103%
+5     1.888e+0      7.8663%
