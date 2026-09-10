@@ -9,7 +9,8 @@ const even = (totalUsed, n) => Array.from({ length: n }, () => totalUsed / n);
 
 export const concat = {
   name: "concat",
-  symmetricLoss: false, // loss is position-dependent (per-member used shares) — never collapse
+  symmetricLoss: false,
+  usableFactor: () => 1, // loss is position-dependent (per-member used shares) — never collapse
   placement(totalUsed, caps) {
     const out = caps.map(() => 0);
     let remaining = totalUsed;
@@ -35,6 +36,7 @@ export const concat = {
 export const strip = {
   name: "strip",
   symmetricLoss: true,
+  usableFactor: (params) => params.d / (params.d + params.m),
   // params: {d, m}
   placement(totalUsed, caps, params) {
     const n = params.d + params.m;
@@ -55,6 +57,7 @@ export const strip = {
 export const split = {
   name: "split",
   symmetricLoss: true,
+  usableFactor: (params) => params.n / (params.n + params.m),
   placement(totalUsed, _caps, params) { return even(totalUsed, params.n + params.m); },
   // Mode 1, coarse chunks: a file is corrupted when >M of its chunks are lost; chunks sit on distinct
   // members round-robin. With members exactly n+m, per-file chunk loss == member loss count.
@@ -72,6 +75,7 @@ export const split = {
 export const stripSplit = {
   name: "strip-split",
   symmetricLoss: true,
+  usableFactor: (params) => params.n / (params.n + params.m),
   placement(totalUsed, _caps, params) { return even(totalUsed, params.n + params.m); },
   lossFraction(flags, _memberUsed, _totalUsed, params) {
     const lost = flags.reduce((a, f) => a + (f ? 1 : 0), 0);

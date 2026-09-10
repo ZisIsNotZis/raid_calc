@@ -1,11 +1,11 @@
 // Demo: evaluates a 4x8TB RAID5 (strip 3+1) pool and a mirror, prints curve samples.
 // Usage: node demo/demo.js
-import { evaluate, TB } from "../src/core/evaluate.js";
-import { HOURS_PER_YEAR } from "../src/core/config.js";
+import { evaluate } from "../src/core/evaluate.js";
+import { TB, HOURS_PER_YEAR } from "../src/core/config.js";
 
 const kind = {
   capacityTB: 8, lambdaBase: 2.8e-6, lambdaRead: 0.9e-12, lambdaWrite: 1.4e-12,
-  ure: 7.9e-15, readBW: 190e6, writeBW: 170e6, count: 8, spares: 1,
+  ure: 7.9e-15, readBW: 190e6, writeBW: 170e6, count: 9, spares: 1,
 };
 const config = (tree, storeTB) => ({
   schemaVersion: 1,

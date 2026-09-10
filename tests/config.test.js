@@ -21,7 +21,7 @@ const baseConfig = (over = {}) => ({
 describe("config validation", () => {
   it("accepts a valid config", () => {
     const { usableBytes } = validate(baseConfig());
-    expect(usableBytes).toBe(32 * TB); // raw capacity of referenced disks (4 x 8TB)
+    expect(usableBytes).toBe(24 * TB); // strip(3,1) of 4x 8TB: 32TB raw x 3/4
   });
 
   it("rejects wrong schemaVersion", () => {
@@ -46,9 +46,9 @@ describe("config validation", () => {
     expect(() => validate(c)).toThrow(/inventory/);
   });
 
-  it("rejects storeTB above raw capacity", () => {
-    const c = baseConfig({ workload: { storeTB: 100, readBps: 0, writeBps: 0, avgFileMB: 8, horizonY: 5 } });
-    expect(() => validate(c)).toThrow(/raw capacity/);
+  it("rejects storeTB above usable capacity", () => {
+    const c = baseConfig({ workload: { storeTB: 30, readBps: 0, writeBps: 0, avgFileMB: 8, horizonY: 5 } }); // usable 24TB
+    expect(() => validate(c)).toThrow(/usable capacity/);
   });
 
   it("rejects duplicated kind ids", () => {

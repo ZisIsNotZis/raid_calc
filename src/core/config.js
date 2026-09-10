@@ -9,10 +9,10 @@ export class ConfigError extends Error {
 }
 
 const STRATEGIES = {
-  concat: { memberCount: null },            // flexible >= 1
-  strip: { memberCount: (p) => p.d + p.m }, // exact
-  split: { memberCount: (p) => p.n + p.m }, // exact (v1)
-  "strip-split": { memberCount: (p) => p.n + p.m }, // exact (v1)
+  concat: { memberCount: null, usableFactor: () => 1 },            // flexible >= 1
+  strip: { memberCount: (p) => p.d + p.m, usableFactor: (p) => p.d / (p.d + p.m) }, // exact
+  split: { memberCount: (p) => p.n + p.m, usableFactor: (p) => p.n / (p.n + p.m) }, // exact (v1)
+  "strip-split": { memberCount: (p) => p.n + p.m, usableFactor: (p) => p.n / (p.n + p.m) }, // exact (v1)
 };
 
 function requireNumber(obj, key, path, { min = 0, exclusive = false } = {}) {
@@ -84,7 +84,7 @@ export function validate(config) {
   for (const id of kindIds) validateKind(config.kinds[id], id, `kinds.${id}`);
 
   const ctx = { kinds: config.kinds, referenced: {} };
-  const rootInfo = validateNode(config.tree, "tree", ctx);
+  validateNode(config.tree, "tree", ctx);
 
   // Inventory rule: referenced + spares <= count per kind.
   for (const id of kindIds) {
@@ -109,10 +109,20 @@ export function validate(config) {
   requireNumber(w, "avgFileMB", "workload", { min: 0, exclusive: true });
   requireNumber(w, "horizonY", "workload", { min: 0, exclusive: true });
 
-  if (w.storeTB * TB > rootInfo.capacityBytes) {
-    throw new ConfigError(`workload.storeTB (${w.storeTB} TB) exceeds raw capacity (${rootInfo.capacityBytes / TB} TB)`, "workload.storeTB");
+  const usableBytes = usableBytesOf(config.tree, config.kinds);
+  if (w.storeTB * TB > usableBytes) {
+    throw new ConfigError(`workload.storeTB (${w.storeTB} TB) exceeds usable capacity (${(usableBytes / TB).toFixed(1)} TB)`, "workload.storeTB");
   }
-  return { usableBytes: rootInfo.capacityBytes };
+  return { usableBytes };
+}
+
+// Usable capacity composes top-down: each strategy keeps its data-members' share of the
+// aggregate usable bytes its members present.
+function usableBytesOf(node, kinds) {
+  if (node.node === "kind") return kinds[node.kind].capacityTB * TB * node.count;
+  const s = STRATEGIES[node.strategy];
+  const sum = node.members.reduce((a, m) => a + usableBytesOf(m, kinds), 0);
+  return sum * s.usableFactor(node);
 }
 
 export function normalize(config) {

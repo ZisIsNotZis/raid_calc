@@ -48,7 +48,7 @@ function integrate(machine, times) {
   const p = new Float64Array(n);
   p[machine.initialState ?? 0] = 1;
   const k1 = new Float64Array(n), k2 = new Float64Array(n), k3 = new Float64Array(n), k4 = new Float64Array(n), tmp = new Float64Array(n);
-  const dtStep = maxRate > 0 ? 0.5 / maxRate : Infinity;
+  const dtStep = maxRate > 0 ? 1 / maxRate : Infinity;
   const out = [Array.from(p)];
   for (let i = 1; i < times.length; i++) {
     let remaining = times[i] - times[i - 1];
