@@ -217,7 +217,7 @@ export function renderCanvas({
 }) {
   container.innerHTML = "";
   const vm = treeViewModel(config);
-  const svgNS = "http://www.w3.org/2000/svg";
+  const svgNS = "http://www.w3.org/2000/svg"; // SVG namespace constant (not a fetched URL)
 
   // collect all nodes to draw: disk-model nodes (one per distinct kind used + palette kinds),
   // pool nodes, and the output node.

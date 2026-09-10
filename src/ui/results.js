@@ -39,7 +39,7 @@ export function renderOutputCharts({
   svgLost,
   svgP,
   result,
-  mode = 1,
+  _mode = 1,
   xLabel,
 }) {
   const xl =
@@ -137,7 +137,8 @@ function nodeAt(node, path) {
   for (const part of parts.slice(1)) {
     const m = /^members\[(\d+)\]$/.exec(part);
     if (m) cur = cur.members[Number(m[1])];
-    else cur = cur[part];
+    else if (Object.hasOwn(cur, part)) cur = cur[part];
+    else throw new Error(`unknown config path segment '${part}'`);
   }
   return cur;
 }
