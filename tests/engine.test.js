@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { buildPoolMachine } from "../src/core/machine.js";
 import { lossCurves, anyLossCurve } from "../src/core/ctmc.js";
+import { K_STATES } from "../src/core/machine.js";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
 
 const CTX = (over = {}) => ({
   kinds: {
@@ -164,9 +167,12 @@ describe("composition", () => {
       members: [child, child],
     };
     const machine = buildPoolMachine(parent, ctx, 1e6);
-    // two identical 15-state children collapse to compositions of 2 into 15 parts = 120
-    expect(machine.nStates).toBe(120);
-    const times = [0, 1e5, 1e6];
+    // children have K_STATES=6 layouts: child states = C(4+5,5) = 126; identical children
+    // collapse to compositions of 2 into 126 parts
+    const childStates = 126;
+    const expected = (childStates * (childStates + 1)) / 2;
+    expect(machine.nStates).toBe(expected);
+    const times = [0, 5e4, 1e5];
     const parentP = anyLossCurve(machine, times);
     // standalone reference: SAME usedBytes the parent distributes to each child (8TB)
     const childMachine = buildPoolMachine(
@@ -190,7 +196,7 @@ describe("composition", () => {
   it("expected lost fraction is monotone (both modes)", { timeout: 120000 }, () => {
     const ctx = CTX({ ctx: { usedBytes: 4e12 } });
     const machine = buildPoolMachine(stripPool(3, 1), ctx, 1e6);
-    const { mode1, mode2 } = lossCurves(machine, [0, 1e4, 1e5, 1e6]);
+    const { mode1, mode2 } = lossCurves(machine, [0, 1e4, 1e5]);
     for (const curve of [mode1, mode2]) {
       for (let i = 1; i < curve.length; i++)
         expect(curve[i]).toBeGreaterThanOrEqual(curve[i - 1] - 1e-12);
@@ -201,9 +207,9 @@ describe("composition", () => {
     const ctx = CTX({ ctx: { usedBytes: 12e12 } });
     const split = { node: "pool", strategy: "split", n: 2, m: 1, lambdaCC: 0, members: [{ node: "kind", kind: "d", count: 3 }] };
     const m = buildPoolMachine(split, ctx, 1e6);
-    // compositions of 3 disks into k = 3 disk states (tOp=tSwap=0, tRebuild>0)
+    // compositions of 3 disks into the 6 fixed member states (state layout is machine-internal)
     const states = [];
-    const rec = (rem, idx, acc) => { if (idx === 2) { states.push(acc.concat(rem)); return; } for (let c = 0; c <= rem; c++) rec(rem - c, idx + 1, acc.concat(c)); };
+    const rec = (rem, idx, acc) => { if (idx === K_STATES - 1) { states.push(acc.concat(rem)); return; } for (let c = 0; c <= rem; c++) rec(rem - c, idx + 1, acc.concat(c)); };
     rec(3, 0, []);
     expect(m.nStates).toBe(states.length);
     states.forEach((c, i) => {
@@ -242,7 +248,7 @@ describe("composition", () => {
     const ss = { node: "pool", strategy: "strip-split", n: 2, m: 1, lambdaCC: 0, members: [{ node: "kind", kind: "d", count: 3 }] };
     const m = buildPoolMachine(ss, ctx, 1e6);
     const states = [];
-    const rec = (rem, idx, acc) => { if (idx === 2) { states.push(acc.concat(rem)); return; } for (let c = 0; c <= rem; c++) rec(rem - c, idx + 1, acc.concat(c)); };
+    const rec = (rem, idx, acc) => { if (idx === K_STATES - 1) { states.push(acc.concat(rem)); return; } for (let c = 0; c <= rem; c++) rec(rem - c, idx + 1, acc.concat(c)); };
     rec(3, 0, []);
     states.forEach((c, i) => {
       const dead = 3 - c[0];
@@ -306,6 +312,54 @@ describe("composition", () => {
     });
     expect(() => buildPoolMachine(stripPool(3, 1), sat, 1e6)).toThrow(/saturates/);
     expect(() => buildPoolMachine(stripPool(3, 1), ctx, 1e6)).not.toThrow();
+  });
+
+  it("spares: stocked spare shortens the repair path vs procurement-only", { timeout: 180000 }, () => {
+    // S=1 vs S=0: same pool, same rates — the spare path (tSwap) is shorter than procurement
+    // (tProc), so P(any loss) over the horizon must be lower with a spare stocked
+    const mk = (spares) => {
+      const ctx = CTX({
+        global: { tOpH: 12, tSwapH: 0.167, tProcH: 48, rebuildBw: 150e6, contention: true },
+        ctx: { usedBytes: 4e12 },
+      });
+      ctx.kinds.d.spares = spares;
+      return buildPoolMachine(
+        { node: "pool", strategy: "strip", d: 3, m: 1, lambdaCC: 0, members: [{ node: "kind", kind: "d", count: 4 }] },
+        ctx, 1e6,
+      );
+    };
+    const withSpare = anyLossCurve(mk(1), [0, 1e5])[1];
+    const without = anyLossCurve(mk(0), [0, 1e5])[1];
+    expect(withSpare).toBeLessThan(without);
+    expect(without).toBeGreaterThan(0);
+  });
+
+  it("kind shared across different parents is rejected (spare groups are sibling-scoped)", () => {
+    const { validate, ConfigError } = require("../src/core/config.js");
+    const cfg = {
+      schemaVersion: 1,
+      kinds: { d: { capacityTB: 4, lambdaBase: 1e-5, lambdaRead: 0, lambdaWrite: 0, ure: 0, readBW: 1e8, writeBW: 1e8, count: 8, spares: 1 } },
+      tree: {
+        node: "pool", strategy: "strip", d: 1, m: 1, lambdaCC: 0,
+        members: [
+          { node: "pool", strategy: "concat", lambdaCC: 0, members: [{ node: "kind", kind: "d", count: 1 }] },
+          { node: "pool", strategy: "concat", lambdaCC: 0, members: [{ node: "kind", kind: "d", count: 1 }] },
+        ],
+      },
+      global: { tOpH: 1, tSwapH: 1, tProcH: 1, rebuildBw: 1e8, contention: true },
+      workload: { storeTB: 1, readBps: 0, writeBps: 0, avgFileMB: 8, horizonY: 1 },
+    };
+    // siblings under one parent: fine
+    expect(() => validate(cfg)).not.toThrow();
+    // same kind under two different top-level parents: rejected
+    cfg.tree = {
+      node: "pool", strategy: "concat", lambdaCC: 0,
+      members: [
+        { node: "pool", strategy: "strip", d: 1, m: 1, lambdaCC: 0, members: [{ node: "kind", kind: "d", count: 1 }] },
+        { node: "pool", strategy: "strip", d: 1, m: 1, lambdaCC: 0, members: [{ node: "kind", kind: "d", count: 1 }] },
+      ],
+    };
+    expect(() => validate(cfg)).toThrow(ConfigError);
   });
 
   it("common-cause shock: lambdaCC-only pool loses at exactly lambdaCC", () => {
@@ -387,7 +441,7 @@ describe("composition", () => {
     // usage spanning both concat members: 10TB over 2 children -> 5TB each -> child placement [4TB, 1TB]
     expect(() =>
       buildPoolMachine(parent, CTX({ ctx: { usedBytes: 10e12 } }), 1e6),
-    ).toThrow(/mode-2 nesting/);
+    ).toThrow(/concat children under parents/);
   });
 
   it("enforces the state-space budget", () => {

@@ -42,27 +42,38 @@ export function buildKilled(machine) {
   };
 }
 
+// CSR-style flat storage: much faster inner loop than array-of-arrays for large machines.
 function buildRows(machine) {
-  const rows = Array.from({ length: machine.nStates }, () => []);
-  const exit = new Float64Array(machine.nStates);
-  for (const t of machine.transitions) {
-    if (!(t.rate > 0)) continue;
-    rows[t.from].push([t.to, t.rate]);
+  const n = machine.nStates;
+  const counts = new Int32Array(n);
+  const finite = machine.transitions.filter((t) => t.rate > 0 && Number.isFinite(t.rate) && Number.isFinite(t.from) && Number.isFinite(t.to));
+  for (const t of finite) counts[t.from]++;
+  const rowStart = new Int32Array(n + 1);
+  for (let i = 0; i < n; i++) rowStart[i + 1] = rowStart[i] + counts[i];
+  const targets = new Int32Array(finite.length);
+  const rates = new Float64Array(finite.length);
+  const fill = rowStart.slice();
+  const exit = new Float64Array(n);
+  for (const t of finite) {
+    targets[fill[t.from]] = t.to;
+    rates[fill[t.from]] = t.rate;
+    fill[t.from]++;
     exit[t.from] += t.rate;
   }
   let maxRate = 0;
-  for (let i = 0; i < exit.length; i++)
-    if (exit[i] > maxRate) maxRate = exit[i];
-  return { rows, exit, maxRate };
+  for (let i = 0; i < n; i++) if (exit[i] > maxRate) maxRate = exit[i];
+  return { rowStart, targets, rates, exit, maxRate };
 }
 
-function applyRows(rows, exit, p, out) {
+function applyRows(rowStart, targets, rates, exit, p, out) {
   out.fill(0);
-  for (let i = 0; i < p.length; i++) {
+  const n = p.length;
+  for (let i = 0; i < n; i++) {
     const pi = p[i];
     if (pi === 0) continue;
     out[i] -= pi * exit[i];
-    for (const [j, r] of rows[i]) out[j] += pi * r;
+    const e = rowStart[i + 1];
+    for (let k = rowStart[i]; k < e; k++) out[targets[k]] += pi * rates[k];
   }
 }
 
@@ -81,7 +92,7 @@ function sumLf(lf, p) {
 
 // Integrates p(t) and the two rate-term integrals; returns per-time-point arrays.
 function integrate(machine, times) {
-  const { rows, exit, maxRate } = buildRows(machine);
+  const { rowStart, targets, rates, exit, maxRate } = buildRows(machine);
   const n = machine.nStates;
   const rho1 = machine.lossRate1;
   const rho2 = machine.lossRate2;
@@ -102,13 +113,13 @@ function integrate(machine, times) {
     let remaining = times[i] - times[i - 1];
     while (remaining > 1e-15) {
       const dt = Math.min(dtStep, remaining);
-      applyRows(rows, exit, p, k1);
+      applyRows(rowStart, targets, rates, exit, p, k1);
       for (let s = 0; s < n; s++) tmp[s] = p[s] + (dt / 2) * k1[s];
-      applyRows(rows, exit, tmp, k2);
+      applyRows(rowStart, targets, rates, exit, tmp, k2);
       for (let s = 0; s < n; s++) tmp[s] = p[s] + (dt / 2) * k2[s];
-      applyRows(rows, exit, tmp, k3);
+      applyRows(rowStart, targets, rates, exit, tmp, k3);
       for (let s = 0; s < n; s++) tmp[s] = p[s] + dt * k3[s];
-      applyRows(rows, exit, tmp, k4);
+      applyRows(rowStart, targets, rates, exit, tmp, k4);
       for (let s = 0; s < n; s++)
         p[s] += (dt / 6) * (k1[s] + 2 * k2[s] + 2 * k3[s] + k4[s]);
       let sum = 0;
