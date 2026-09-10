@@ -1,6 +1,6 @@
 # Ticket: 07-io-feasibility
 
-- **Status:** ready-for-agent
+- **Status:** claimed
 - **Need-review:** yes (behavior changes)
 
 ## Issue

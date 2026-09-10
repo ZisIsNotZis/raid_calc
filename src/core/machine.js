@@ -28,12 +28,39 @@ function expandMembers(node) {
   );
 }
 
-function diskStageMeans(ctx, kind, usedBytes) {
-  const rebuildBps = ctx.global.contention
-    ? Math.min(kind.readBW, kind.writeBW)
-    : ctx.global.rebuildBw;
+// Per-disk workload feasibility + leftover-bandwidth rebuild rate (raid-calc.md §3.5):
+// rebuild reads run on survivors at R <= readBW - workload read; the replacement writes at
+// full writeBW (a fresh disk serves no workload). Contention off = dedicated rebuildBw.
+// Returns { stageMeans, rebuildBps, idleBps, slowdown } and throws on infeasible workload.
+function rebuildPlan(ctx, kind, usedBytes, wl) {
+  if (wl.read > kind.readBW || wl.write > kind.writeBW) {
+    throw new BuildError(
+      `workload exceeds disk bandwidth: disk '${kind.id ?? "kind"}' needs R ${wl.read.toExponential(2)} / W ${wl.write.toExponential(2)} B/s but has ${kind.readBW} / ${kind.writeBW} — reduce the workload or add disks`,
+    );
+  }
+  let rebuildBps;
+  let idleBps = Math.min(kind.readBW, kind.writeBW);
+  if (!ctx.global.contention) {
+    rebuildBps = ctx.global.rebuildBw;
+  } else {
+    rebuildBps = Math.min(kind.readBW - wl.read, kind.writeBW);
+    if (rebuildBps <= 0) {
+      throw new BuildError(
+        `workload saturates the pool: no leftover read bandwidth for rebuild (disk ${kind.readBW} B/s, workload reads ${wl.read.toExponential(2)} B/s) — add disks or reduce the workload`,
+      );
+    }
+  }
   const tRebuildH = usedBytes / (rebuildBps * 3600);
-  return [ctx.global.tOpH, ctx.global.tSwapH, tRebuildH].filter((m) => m > 0);
+  const stageMeans = [ctx.global.tOpH, ctx.global.tSwapH, tRebuildH].filter(
+    (m) => m > 0,
+  );
+  return {
+    stageMeans,
+    rebuildBps,
+    idleBps,
+    slowdown: ctx.global.contention && rebuildBps > 0 ? idleBps / rebuildBps : 1,
+    utilization: Math.max(kind.readBW > 0 ? wl.read / kind.readBW : 0, kind.writeBW > 0 ? wl.write / kind.writeBW : 0),
+  };
 }
 
 function diskLambda(ctx, kind, share) {
@@ -80,7 +107,12 @@ function buildErasureLeaf(node, ctx, kind, members, memberUsed) {
   const N = members.length;
   const share = 1 / N;
   const lambda = diskLambda(ctx, kind, { read: share, write: share });
-  const stages = diskStageMeans(ctx, kind, memberUsed[0]);
+  const wlShare = {
+    read: (ctx.workload.readBps * share),
+    write: (ctx.workload.writeBps * share),
+  };
+  const plan = rebuildPlan(ctx, kind, memberUsed[0], wlShare);
+  const stages = plan.stageMeans;
   const k = stages.length + 2; // af, dead stages..., ae
   const ae = k - 1;
   const states = compositions(N, k, ctx.stateBudget);
@@ -181,6 +213,8 @@ function buildErasureLeaf(node, ctx, kind, members, memberUsed) {
     usedBytes: ctx.usedBytes,
     capacityBytes: N * kind.capacityTB * 1e12,
     usableBytes: N * kind.capacityTB * 1e12 * ((N - node.m) / N),
+    rebuildSlowdown: plan.slowdown,
+    bottleneckUtil: plan.utilization,
   };
 }
 
@@ -193,8 +227,17 @@ function buildConcatLeaf(node, ctx, kind, members, memberUsed) {
     diskLambda(ctx, kind, { read: ioShares[i], write: ioShares[i] }),
   );
   // per-member stage means differ (memberUsed differs) -> ordered tuples over per-member machines
+  let maxSlowdown = 1;
+  let maxUtil = 0;
   const machines = members.map((_m, i) => {
-    const stages = diskStageMeans(ctx, kind, memberUsed[i]);
+    const wl = {
+      read: ctx.workload.readBps * ioShares[i],
+      write: ctx.workload.writeBps * ioShares[i],
+    };
+    const plan = rebuildPlan(ctx, kind, memberUsed[i], wl);
+    maxSlowdown = Math.max(maxSlowdown, plan.slowdown);
+    maxUtil = Math.max(maxUtil, plan.utilization);
+    const stages = plan.stageMeans;
     const k = stages.length + 2;
     const transitions = [];
     const head = stages.length > 0 ? 1 : k - 1;
@@ -255,6 +298,8 @@ function buildConcatLeaf(node, ctx, kind, members, memberUsed) {
     usedBytes: ctx.usedBytes,
     capacityBytes: N * kind.capacityTB * 1e12,
     usableBytes: N * kind.capacityTB * 1e12,
+    rebuildSlowdown: maxSlowdown,
+    bottleneckUtil: maxUtil,
   };
 }
 
@@ -441,6 +486,8 @@ function buildParentMachine(node, ctx, stateBudget) {
     }
   }
   const usable = machines.reduce((a, m) => a + (m.usableBytes ?? 0), 0);
+  const rebuildSlowdown = machines.reduce((a, m) => Math.max(a, m.rebuildSlowdown ?? 1), 1);
+  const bottleneckUtil = machines.reduce((a, m) => Math.max(a, m.bottleneckUtil ?? 0), 0);
   return {
     nStates: product.nStates,
     transitions: product.transitions,
@@ -452,13 +499,20 @@ function buildParentMachine(node, ctx, stateBudget) {
     usedBytes: ctx.usedBytes,
     capacityBytes: caps.reduce((a, b) => a + b, 0),
     usableBytes: usable * strategy.usableFactor(node),
+    rebuildSlowdown,
+    bottleneckUtil,
     lambdaCC: node.lambdaCC || 0,
   };
 }
 
 function buildBareDiskMachine(ctx, kind, usedBytes, share) {
   const lambda = diskLambda(ctx, kind, share);
-  const stages = diskStageMeans(ctx, kind, usedBytes);
+  const wl = {
+    read: ctx.workload.readBps * share.read,
+    write: ctx.workload.writeBps * share.write,
+  };
+  const plan = rebuildPlan(ctx, kind, usedBytes, wl);
+  const stages = plan.stageMeans;
   const k = stages.length + 2;
   const transitions = [];
   const head = stages.length > 0 ? 1 : k - 1;

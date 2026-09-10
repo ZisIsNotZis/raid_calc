@@ -50,5 +50,7 @@ export function evaluate(
     usableBytes,
     usageRatio: usedBytes / usableBytes,
     stateCount: machine.nStates,
+    rebuildSlowdown: machine.rebuildSlowdown ?? 1,
+    bottleneckUtil: machine.bottleneckUtil ?? 0,
   };
 }
