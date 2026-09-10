@@ -1,6 +1,6 @@
 # Ticket: 06-erasure-strategies
 
-- **Status:** claimed
+- **Status:** done
 - **Need-review:** yes (behavior changes)
 
 ## Issue
