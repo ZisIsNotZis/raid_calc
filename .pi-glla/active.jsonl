@@ -82,3 +82,5 @@
 {"type":"session_shutdown","value":{"reason":"quit"},"at":"2026-09-10T04:07:37.901Z"}
 {"type":"session_rebound","value":{"reason":"startup"},"at":"2026-09-10T04:39:48.895Z"}
 {"type":"context_hygiene_dropped","value":{"dropped":19,"kept":1,"lastError":"429: {\"code\":\"AccountRateLimitExceeded\",\"message\":\"Requests are too frequent. Please reduce your request frequency, wait a short moment, and retry your request.","generation":3},"at":"2026-09-10T04:39:49.245Z"}
+{"type":"context_hygiene_dropped","value":{"dropped":19,"kept":1,"lastError":"429: {\"code\":\"AccountRateLimitExceeded\",\"message\":\"Requests are too frequent. Please reduce your request frequency, wait a short moment, and retry your request.","generation":0},"at":"2026-09-10T04:43:19.505Z"}
+{"type":"context_hygiene_dropped","value":{"dropped":19,"kept":1,"lastError":"429: {\"code\":\"AccountRateLimitExceeded\",\"message\":\"Requests are too frequent. Please reduce your request frequency, wait a short moment, and retry your request.","generation":0},"at":"2026-09-10T04:44:34.891Z"}

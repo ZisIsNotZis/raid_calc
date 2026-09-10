@@ -1,6 +1,6 @@
 # Ticket: 10-optimizer
 
-- **Status:** ready-for-agent
+- **Status:** claimed
 - **Need-review:** yes (behavior changes)
 
 ## Issue
