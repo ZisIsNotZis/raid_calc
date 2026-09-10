@@ -1,6 +1,6 @@
 # Ticket: 04-core-schema-strategies
 
-- **Status:** ready-for-agent
+- **Status:** claimed
 - **Need-review:** yes (behavior changes)
 
 ## Issue

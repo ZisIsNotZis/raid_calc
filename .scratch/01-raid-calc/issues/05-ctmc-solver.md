@@ -1,6 +1,6 @@
 # Ticket: 05-ctmc-solver
 
-- **Status:** ready-for-agent
+- **Status:** claimed
 - **Need-review:** yes (behavior changes)
 
 ## Issue
