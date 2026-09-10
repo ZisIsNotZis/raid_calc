@@ -2,19 +2,43 @@ import { describe, it, expect } from "vitest";
 import { validate, ConfigError, TB } from "../src/core/config.js";
 
 const kind = (over = {}) => ({
-  capacityTB: 8, lambdaBase: 2.8e-6, lambdaRead: 0.9e-12, lambdaWrite: 1.4e-12,
-  ure: 7.9e-15, readBW: 190e6, writeBW: 170e6, count: 12, spares: 1, ...over,
+  capacityTB: 8,
+  lambdaBase: 2.8e-6,
+  lambdaRead: 0.9e-12,
+  lambdaWrite: 1.4e-12,
+  ure: 7.9e-15,
+  readBW: 190e6,
+  writeBW: 170e6,
+  count: 12,
+  spares: 1,
+  ...over,
 });
 
 const baseConfig = (over = {}) => ({
   schemaVersion: 1,
   kinds: { hdd8: kind() },
   tree: {
-    node: "pool", strategy: "strip", d: 3, m: 1, lambdaCC: 1e-7,
+    node: "pool",
+    strategy: "strip",
+    d: 3,
+    m: 1,
+    lambdaCC: 1e-7,
     members: [{ node: "kind", kind: "hdd8", count: 4 }],
   },
-  global: { tOpH: 12, tSwapH: 10 / 60, tProcH: 48, rebuildBw: 150e6, contention: true },
-  workload: { storeTB: 20, readBps: 200e6, writeBps: 50e6, avgFileMB: 8, horizonY: 5 },
+  global: {
+    tOpH: 12,
+    tSwapH: 10 / 60,
+    tProcH: 48,
+    rebuildBw: 150e6,
+    contention: true,
+  },
+  workload: {
+    storeTB: 20,
+    readBps: 200e6,
+    writeBps: 50e6,
+    avgFileMB: 8,
+    horizonY: 5,
+  },
   ...over,
 });
 
@@ -25,7 +49,9 @@ describe("config validation", () => {
   });
 
   it("rejects wrong schemaVersion", () => {
-    expect(() => validate(baseConfig({ schemaVersion: 2 }))).toThrow(ConfigError);
+    expect(() => validate(baseConfig({ schemaVersion: 2 }))).toThrow(
+      ConfigError,
+    );
   });
 
   it("rejects unknown kind references", () => {
@@ -47,7 +73,15 @@ describe("config validation", () => {
   });
 
   it("rejects storeTB above usable capacity", () => {
-    const c = baseConfig({ workload: { storeTB: 30, readBps: 0, writeBps: 0, avgFileMB: 8, horizonY: 5 } }); // usable 24TB
+    const c = baseConfig({
+      workload: {
+        storeTB: 30,
+        readBps: 0,
+        writeBps: 0,
+        avgFileMB: 8,
+        horizonY: 5,
+      },
+    }); // usable 24TB
     expect(() => validate(c)).toThrow(/usable capacity/);
   });
 
