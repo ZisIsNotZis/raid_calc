@@ -62,14 +62,14 @@ for (const [name, tree, store] of [
   say(
     `\n=== ${name} — store ${store}TB, usable ${(r.usableBytes / TB).toFixed(0)}TB, states ${r.stateCount}`,
   );
-  say("year  E[lost TB]   P(any loss)");
+  say("year  E[lost TB] (rigorous / partial)   P(any loss)");
   for (const y of [1, 3, 5]) {
     const i = Math.round(
       ((y * HOURS_PER_YEAR) / r.times[r.times.length - 1]) *
         (r.times.length - 1),
     );
     say(
-      `${y}     ${(r.expectedLostBytes[i] / TB).toExponential(3)}      ${(r.anyLossProb[i] * 100).toFixed(4)}%`,
+      `${y}     ${(r.expectedLostBytes[i] / TB).toExponential(3)} / ${(r.expectedLostBytesPartial[i] / TB).toExponential(3)}      ${(r.anyLossProb[i] * 100).toFixed(4)}%`,
     );
   }
 }

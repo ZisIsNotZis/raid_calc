@@ -67,12 +67,16 @@ function compositions(n, k, stateBudget = Infinity) {
 }
 
 // --- Leaf pools (all members are physical disks of ONE kind) -----------------
-// Strip leaf: parity restores members while dead <= M; beyond that the pool's data is gone
-// (states with dead > M are absorbing). During rebuild, survivors read at the reconstruction
-// rate (elevated hazard via lambdaRead) and carry URE hazard u per byte — a URE corrupts a
-// stripe unless the group still has spare parity (absorption factor per raid-calc.md §3.5).
+// Erasure leaves (strip / split / strip-split): parity restores members while dead <= M
+// (rebuild exit lands alive-full); beyond M the exiting member lands alive-empty — the dead
+// count is monotone, so both loss fractions are state-determined and monotone without
+// absorbing states, and mode-2 losses accumulate as members die beyond parity.
+// During rebuild, survivors read at the reconstruction rate (elevated hazard via lambdaRead)
+// and carry URE hazard u per byte — a URE blocks reconstruction of one chunk unless the
+// group still has spare parity (absorption factor per raid-calc.md §3.5). URE losses are
+// RATE terms (machine.lossRate), not state jumps: E[loss](t) = Σ p·lf + ∫ Σ p·ρ.
 // Common-cause shocks (lambdaCC, leaf-only per §3.3) kill all members at once.
-function buildStripLeaf(node, ctx, kind, members, memberUsed) {
+function buildErasureLeaf(node, ctx, kind, members, memberUsed) {
   const N = members.length;
   const share = 1 / N;
   const lambda = diskLambda(ctx, kind, { read: share, write: share });
@@ -85,24 +89,33 @@ function buildStripLeaf(node, ctx, kind, members, memberUsed) {
   const index = new Map(states.map((s, i) => [keyOf(s), i]));
 
   const dead = (c) => N - c[0];
-  const lost = (c) => dead(c) > node.m;
-  const lostFraction = new Float64Array(nStates);
+  const lostFraction = new Float64Array(nStates); // mode 1: any corruption of a file = file lost
+  const lostFraction2 = new Float64Array(nStates); // mode 2: chunks lost beyond parity
+  const lossRate1 = new Float64Array(nStates); // URE rate terms (per-hour expected-fraction increase)
+  const lossRate2 = new Float64Array(nStates);
   const transitions = [];
   const add = (from, to, rate) => {
+    if (!Number.isFinite(rate)) throw new BuildError(`non-finite transition rate (${from} -> ${to}) — check config for missing/invalid inputs`);
     if (!(rate > 0)) return;
     transitions.push({ from, to, rate });
   };
-  // shock + URE land in a designated absorbing all-lost state (all members alive-empty)
-  const lostTarget = index.get(
+  // common-cause shock target: all members alive-empty
+  const shockTarget = index.get(
     keyOf(Array.from({ length: k }, (_, i) => (i === ae ? N : 0))),
   );
   const rebThroughput =
     stages.length > 0 ? memberUsed[0] / 3600 / stages[stages.length - 1] : 0; // B/s
-  const urePerHour = kind.ure * rebThroughput * 3600; // hazard per hour of rebuilding
+  const ureEventsPerHour = kind.ure * rebThroughput * (N - 1) * 3600; // survivor reads total
+  // per-URE-event cost: the blocked chunk belonged to data with prob N/(N+M); the group
+  // holds one avg file (span approximation, raid-calc.md §3.7)
+  const perEvent1 =
+    (N / N) * (ctx.avgFileBytes / ctx.usedBytes) * (N / N) * (N / (N + node.m));
+  const perEvent2 = ctx.avgFileBytes / N / ctx.usedBytes;
 
   states.forEach((c, s) => {
-    lostFraction[s] = lost(c) ? 1 : 0;
-    if (lost(c)) return; // absorbing: data gone, pool abandoned
+    const d = dead(c);
+    lostFraction[s] = d > node.m ? 1 : 0;
+    lostFraction2[s] = Math.max(0, d - node.m) / N;
     const rebuilding = stages.length > 0 && c[k - 2] > 0;
     // survivor reads during rebuild elevate alive-member hazard (lambdaRead on rebuild reads)
     const deathRate =
@@ -129,26 +142,32 @@ function buildStripLeaf(node, ctx, kind, members, memberUsed) {
         add(s, index.get(keyOf(next)), c[i] * (1 / stages[i - 1]));
       }
     }
-    // rebuild exit from the last dead stage: parity restores the member (dead <= M here)
+    // rebuild exit: the exiting member's chunks are reconstructable only while the stripe
+    // group is intact (current dead <= M) — beyond that it lands alive-empty
     const last = k - 2;
     if (stages.length > 0 && c[last] > 0) {
+      const restores = node.m >= 1 && d <= node.m;
       const next = c.slice();
       next[last]--;
-      next[0]++;
+      next[restores ? 0 : ae]++;
       add(s, index.get(keyOf(next)), c[last] * (1 / stages[stages.length - 1]));
     }
-    // URE during rebuild: corrupts a stripe unless the group still has spare parity
-    if (rebuilding && urePerHour > 0) {
-      const absorbed = node.m - dead(c) >= 1 ? 1 : 0;
-      add(s, lostTarget, urePerHour * (1 - absorbed));
+    // URE during rebuild: corrupts one chunk unless the group still has spare parity
+    if (rebuilding && ureEventsPerHour > 0) {
+      const absorbed = node.m - d >= 1 ? 1 : 0;
+      lossRate1[s] = ureEventsPerHour * (1 - absorbed) * perEvent1;
+      lossRate2[s] = ureEventsPerHour * (1 - absorbed) * perEvent2;
     }
     // common-cause shock: all members die at once
-    if (node.lambdaCC > 0) add(s, lostTarget, node.lambdaCC);
+    if (node.lambdaCC > 0) add(s, shockTarget, node.lambdaCC);
   });
   return {
     nStates,
     transitions,
     lostFraction,
+    lostFraction2,
+    lossRate1,
+    lossRate2,
     initialState: index.get(
       keyOf(Array.from({ length: k }, (_, i) => (i === 0 ? N : 0))),
     ),
@@ -181,7 +200,14 @@ function buildConcatLeaf(node, ctx, kind, members, memberUsed) {
       transitions.push({ from: k - 1, to: head, rate: lambdas[i] });
     const memberLost = new Uint8Array(k).fill(1);
     memberLost[ALIVE_FULL] = 0;
-    return { nStates: k, transitions, memberLost, initialState: ALIVE_FULL };
+    return {
+      nStates: k,
+      transitions,
+      memberLost,
+      initialState: ALIVE_FULL,
+      lossRate1: null,
+      lossRate2: null,
+    };
   });
   const product = buildProduct(machines, ctx.stateBudget, false); // position-dependent: never collapse
   const totalUsed = ctx.usedBytes;
@@ -215,6 +241,9 @@ function buildConcatLeaf(node, ctx, kind, members, memberUsed) {
     nStates: product.nStates,
     transitions: product.transitions,
     lostFraction,
+    lostFraction2: lostFraction, // no chunking: partial mode == rigorous mode
+    lossRate1: new Float64Array(product.nStates),
+    lossRate2: new Float64Array(product.nStates),
     initialState: product.initialState,
     usedBytes: ctx.usedBytes,
     capacityBytes: N * kind.capacityTB * 1e12,
@@ -415,14 +444,9 @@ function buildBareDiskMachine(ctx, kind, usedBytes, share) {
 
 // --- Entry --------------------------------------------------------------------
 export function buildPoolMachine(node, ctx, stateBudget) {
-  ctx = { ...ctx, stateBudget };
+  ctx = { ...ctx, stateBudget, avgFileBytes: ctx.workload.avgFileMB * 1e6 };
   const strategy = strategies[node.strategy];
   if (!strategy) throw new BuildError(`unknown strategy '${node.strategy}'`);
-  if (node.strategy === "split" || node.strategy === "strip-split") {
-    throw new BuildError(
-      `strategy '${node.strategy}' lands in ticket 06 (erasure strategies)`,
-    );
-  }
   const members = expandMembers(node);
   const kinds = members.map((m) =>
     m.node === "kind" ? ctx.kinds[m.kind] : null,
@@ -438,9 +462,9 @@ export function buildPoolMachine(node, ctx, stateBudget) {
     const caps = members.map((m) => memberCapacityBytes(ctx, m));
     const memberUsed = strategy.placement(ctx.usedBytes, caps, node);
     const kind = kinds[0];
-    return node.strategy === "strip"
-      ? buildStripLeaf(node, ctx, kind, members, memberUsed)
-      : buildConcatLeaf(node, ctx, kind, members, memberUsed);
+    return node.strategy === "concat"
+      ? buildConcatLeaf(node, ctx, kind, members, memberUsed)
+      : buildErasureLeaf(node, ctx, kind, members, memberUsed);
   }
   return buildParentMachine(node, ctx, stateBudget);
 }

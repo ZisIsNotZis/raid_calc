@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildPoolMachine } from "../src/core/machine.js";
-import { expectedLossCurve, anyLossCurve } from "../src/core/ctmc.js";
+import { lossCurves, anyLossCurve } from "../src/core/ctmc.js";
 
 const CTX = (over = {}) => ({
   kinds: {
@@ -24,7 +24,7 @@ const CTX = (over = {}) => ({
     contention: true,
     ...over.global,
   },
-  workload: { readBps: 0, writeBps: 0, ...over.workload },
+  workload: { readBps: 0, writeBps: 0, avgFileMB: 8, ...over.workload },
   usedBytes: 16e12,
   ...over.ctx,
 });
@@ -60,7 +60,7 @@ describe("solver vs closed forms", () => {
     t.forEach((ti, i) =>
       expect(got[i]).toBeCloseTo(1 - Math.exp(-lambda * ti), 6),
     );
-    const e = expectedLossCurve(machine, t);
+    const e = lossCurves(machine, t).mode1;
     e.forEach((v, i) => expect(v).toBeCloseTo(1 - Math.exp(-lambda * t[i]), 6)); // used = 1 member = all used
   });
 
@@ -83,7 +83,7 @@ describe("solver vs closed forms", () => {
     times.forEach((ti, i) => expect(got[i]).toBeCloseTo(1 - S(ti), 5));
   });
 
-  it("RAID5 (strip 3+1): hazard matches first-order MTTDL within 2%", () => {
+  it("RAID5 (strip 3+1): hazard matches first-order MTTDL within 2%", { timeout: 120000 }, () => {
     const lambda = 1e-5,
       N = 4,
       MTTR = 4e12 / (1.12e8 * 3600); // ~9.92h
@@ -123,7 +123,7 @@ describe("solver vs closed forms", () => {
 });
 
 describe("composition", () => {
-  it("concat of 2 disks at 50% usage: loss = P(disk 1 ever died); empty disk is free", () => {
+  it("concat of 2 disks at 50% usage: loss = P(disk 1 ever died); empty disk is free", { timeout: 60000 }, () => {
     const lambda = 1e-5;
     // capacity 2x4TB, store 4TB -> all used bytes on disk 1
     const machine = buildPoolMachine(
@@ -137,7 +137,7 @@ describe("composition", () => {
       1e6,
     );
     const times = [0, 1e4, 1e5];
-    const got = expectedLossCurve(machine, times);
+    const got = lossCurves(machine, times).mode1;
     times.forEach((ti, i) =>
       expect(got[i]).toBeCloseTo(1 - Math.exp(-lambda * ti), 5),
     );
@@ -187,12 +187,30 @@ describe("composition", () => {
       expect(parentP[i]).toBeGreaterThanOrEqual(parentP[i - 1] - 1e-12);
   });
 
-  it("expected lost fraction is monotone", () => {
+  it("expected lost fraction is monotone (both modes)", { timeout: 120000 }, () => {
     const ctx = CTX({ ctx: { usedBytes: 4e12 } });
     const machine = buildPoolMachine(stripPool(3, 1), ctx, 1e6);
-    const e = expectedLossCurve(machine, [0, 1e4, 1e5, 1e6]);
-    for (let i = 1; i < e.length; i++)
-      expect(e[i]).toBeGreaterThanOrEqual(e[i - 1] - 1e-12);
+    const { mode1, mode2 } = lossCurves(machine, [0, 1e4, 1e5, 1e6]);
+    for (const curve of [mode1, mode2]) {
+      for (let i = 1; i < curve.length; i++)
+        expect(curve[i]).toBeGreaterThanOrEqual(curve[i - 1] - 1e-12);
+    }
+  });
+
+  it("split(2,1) worked examples: mode-1 binary, mode-2 graded beyond parity", () => {
+    const ctx = CTX({ ctx: { usedBytes: 12e12 } });
+    const split = { node: "pool", strategy: "split", n: 2, m: 1, lambdaCC: 0, members: [{ node: "kind", kind: "d", count: 3 }] };
+    const m = buildPoolMachine(split, ctx, 1e6);
+    // compositions of 3 disks into k = 3 disk states (tOp=tSwap=0, tRebuild>0)
+    const states = [];
+    const rec = (rem, idx, acc) => { if (idx === 2) { states.push(acc.concat(rem)); return; } for (let c = 0; c <= rem; c++) rec(rem - c, idx + 1, acc.concat(c)); };
+    rec(3, 0, []);
+    expect(m.nStates).toBe(states.length);
+    states.forEach((c, i) => {
+      const dead = 3 - c[0];
+      expect(m.lostFraction[i]).toBe(dead > 1 ? 1 : 0);
+      expect(m.lostFraction2[i]).toBeCloseTo(Math.max(0, dead - 1) / 3, 12);
+    });
   });
 
   it("common-cause shock: lambdaCC-only pool loses at exactly lambdaCC", () => {

@@ -1,0 +1,6 @@
+
+=== RAID5 (4x 8TB, strip 3+1) — store 24TB, usable 24TB, states 70
+year  E[lost TB] (rigorous / partial)   P(any loss)
+1     4.922e-1 / 1.905e-1      2.0510%
+3     1.449e+0 / 7.597e-1      6.0359%
+5     2.366e+0 / 1.412e+0      9.8586%

@@ -31,6 +31,7 @@ export const concat = {
     for (let i = 0; i < flags.length; i++) if (flags[i]) lost += memberUsed[i];
     return totalUsed > 0 ? lost / totalUsed : 0;
   },
+  lossFraction2: null, // no chunking: mode 2 == mode 1 (resolved in the machine builder)
   ioShares(memberUsed, totalUsed) {
     return memberUsed.map((u) => ({
       read: totalUsed > 0 ? u / totalUsed : 0,
@@ -54,6 +55,11 @@ export const strip = {
     const dead = flags.reduce((a, f) => a + (f ? 1 : 0), 0);
     return dead > params.m ? 1 : 0; // populated stripes span all members: >M dead breaks everything
   },
+  // mode 2: each death beyond parity costs one chunk of every stripe = 1/(d+m) of used data
+  lossFraction2(flags, _memberUsed, _totalUsed, params) {
+    const dead = flags.reduce((a, f) => a + (f ? 1 : 0), 0);
+    return Math.max(0, dead - params.m) / (params.d + params.m);
+  },
   ioShares(_memberUsed, _totalUsed, params) {
     const n = params.d + params.m;
     return even(1, n).map((s) => ({ read: s, write: s })); // every read/write touches all members
@@ -73,6 +79,10 @@ export const split = {
     const lost = flags.reduce((a, f) => a + (f ? 1 : 0), 0);
     return lost > params.m ? 1 : 0;
   },
+  lossFraction2(flags, _memberUsed, _totalUsed, params) {
+    const lost = flags.reduce((a, f) => a + (f ? 1 : 0), 0);
+    return Math.max(0, lost - params.m) / (params.n + params.m);
+  },
   ioShares(_memberUsed, _totalUsed, params) {
     return even(1, params.n + params.m).map((s) => ({ read: s, write: s }));
   },
@@ -89,6 +99,10 @@ export const stripSplit = {
   lossFraction(flags, _memberUsed, _totalUsed, params) {
     const lost = flags.reduce((a, f) => a + (f ? 1 : 0), 0);
     return lost > params.m ? 1 : 0;
+  },
+  lossFraction2(flags, _memberUsed, _totalUsed, params) {
+    const lost = flags.reduce((a, f) => a + (f ? 1 : 0), 0);
+    return Math.max(0, lost - params.m) / (params.n + params.m);
   },
   rebuildRestoresData() {
     return true;
