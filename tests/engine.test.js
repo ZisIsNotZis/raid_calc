@@ -251,6 +251,63 @@ describe("composition", () => {
     });
   });
 
+  it("rebuild contention: workload leftover reduces rebuild bandwidth (MTTR lengthens, MTTDL matches)", { timeout: 120000 }, () => {
+    // RAID5 first-order MTTDL with contended MTTR: survivors read at R = readBW - wl.read
+    const lambda = 1e-5, N = 4;
+    const readBW = 1.12e8;
+    const wlRead = 0.25 * readBW; // workload takes 25% of each survivor's read bandwidth
+    const ctx = CTX({
+      ctx: {
+        usedBytes: 16e12,
+        workload: { readBps: wlRead * 4, writeBps: 0, avgFileMB: 8 }, // 4 members x wlRead each
+      },
+    });
+    const machine = buildPoolMachine(stripPool(3, 1), ctx, 1e6);
+    const R = readBW - wlRead; // effective rebuild rate per member
+    const MTTR = 4e12 / (R * 3600); // contended
+    const MTTDL = 1 / (N * lambda * (N - 1) * lambda * MTTR);
+    const tStar = 0.05 * MTTDL;
+    const P = anyLossCurve(machine, [0, tStar])[1];
+    const hazardNumeric = -Math.log(1 - P) / tStar;
+    expect(hazardNumeric / (1 / MTTDL)).toBeGreaterThan(0.98);
+    expect(hazardNumeric / (1 / MTTDL)).toBeLessThan(1.02);
+    expect(machine.rebuildSlowdown).toBeCloseTo(readBW / R, 6); // 1/0.75 = 1.333
+  });
+
+  it("contention off: dedicated rebuildBw is used regardless of workload", () => {
+    const ctx = CTX({
+      global: { tOpH: 0, tSwapH: 0, tProcH: 0, rebuildBw: 5e7, contention: false },
+      ctx: { usedBytes: 16e12, workload: { readBps: 8e7, writeBps: 0, avgFileMB: 8 } },
+    });
+    const machine = buildPoolMachine(stripPool(3, 1), ctx, 1e6);
+    // memberUsed = 4e12 at dedicated 5e7 B/s -> tRebuild = 22.2h; no feasibility error despite
+    // heavy workload; slowdown reported as 1 (dedicated channel)
+    expect(machine.rebuildSlowdown).toBe(1);
+    // regression: the rebuild-exit rate must be the DEDICATED rate 1/22.2h, not contended
+    const exitRate = machine.transitions
+      .filter((t) => t.to === 0 && t.rate > 0)
+      .reduce((a, t) => a + t.rate, 0);
+    expect(exitRate).toBeCloseTo(1 / (4e12 / (5e7 * 3600)), 6); // one rebuilding member exits at 1/tRebuild
+  });
+
+  it("infeasible workload: per-disk bandwidth exceeded throws", () => {
+    const ctx = CTX({
+      ctx: { usedBytes: 16e12, workload: { readBps: 5e8, writeBps: 0, avgFileMB: 8 } }, // 1.25e8 per disk > 1.12e8
+    });
+    expect(() => buildPoolMachine(stripPool(3, 1), ctx, 1e6)).toThrow(/exceeds disk bandwidth/);
+  });
+
+  it("fully saturated pool: no leftover bandwidth for rebuild throws", () => {
+    const ctx = CTX({
+      ctx: { usedBytes: 16e12, workload: { readBps: 4.4e8, writeBps: 0, avgFileMB: 8 } }, // exactly 1.1e8 per disk: leftover ~0.02e8, ok; push to 4.48e8 -> 1.12e8 = saturates
+    });
+    const sat = CTX({
+      ctx: { usedBytes: 16e12, workload: { readBps: 4.48e8, writeBps: 0, avgFileMB: 8 } },
+    });
+    expect(() => buildPoolMachine(stripPool(3, 1), sat, 1e6)).toThrow(/saturates/);
+    expect(() => buildPoolMachine(stripPool(3, 1), ctx, 1e6)).not.toThrow();
+  });
+
   it("common-cause shock: lambdaCC-only pool loses at exactly lambdaCC", () => {
     const ctx = CTX({ ctx: { usedBytes: 4e12 } });
     const machine = buildPoolMachine(
