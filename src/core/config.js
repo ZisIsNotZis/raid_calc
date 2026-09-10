@@ -62,7 +62,7 @@ function validateKind(kind, _id, path) {
     );
 }
 
-function validateNode(node, path, ctx) {
+function validateNode(node, path, ctx, parentId = "root") {
   if (node && node.node === "kind") {
     const kind = ctx.kinds[node.kind];
     if (!kind)
@@ -102,7 +102,7 @@ function validateNode(node, path, ctx) {
     requireNumber(node, "lambdaCC", path);
     if (!Array.isArray(node.members))
       throw new ConfigError(`${path}.members must be an array`, path);
-    const expected = s.memberCount(node);
+    const expected = s.memberCount ? s.memberCount(node) : null;
     const slots = node.members.reduce((a, m) => {
       if (m && m.node === "kind")
         return a + (Number.isInteger(m.count) ? m.count : NaN);
@@ -145,7 +145,7 @@ export function validate(config) {
     throw new ConfigError("config.kinds must define at least one kind");
   for (const id of kindIds) validateKind(config.kinds[id], id, `kinds.${id}`);
 
-  const ctx = { kinds: config.kinds, referenced: {} };
+  const ctx = { kinds: config.kinds, referenced: {}, kindParent: {} };
   validateNode(config.tree, "tree", ctx);
 
   // Inventory rule: referenced + spares <= count per kind.

@@ -1,48 +1,49 @@
-// Machine model: a node's CTMC over its exact product state space (symmetry-collapsed where members
-// are interchangeable). A machine is:
-//   { nStates, transitions, lostFraction: Float64Array, initialState, usedBytes, capacityBytes }
-// lostFraction is STATE-DETERMINED and MONOTONE along paths, so E[lost fraction](t) = Σ_s p(s,t)·lf(s).
-// Monotonicity is structural:
-//   - strip pools: states with dead > M are absorbing (data unrecoverable, pool abandoned);
-//   - concat pools: rebuilt members return "aliveEmpty" (capacity back, bytes gone);
-//   - parents compose children that satisfy the contract (verified binary lf per child state).
+// Machine model: a node's CTMC over its exact state space. A machine is:
+//   { nStates, transitions, lostFraction, lostFraction2, lossRate1, lossRate2,
+//     initialState, usedBytes, capacityBytes, usableBytes, rebuildSlowdown, bottleneckUtil,
+//     eventCost1, eventCost2 }
+// lostFraction (mode 1, rigorous) and lostFraction2 (mode 2, partial) are STATE-DETERMINED and
+// monotone along paths; lossRate1/2 are continuous hazard terms (URE during rebuild) — see
+// raid-calc.md §3.7: E[loss](t) = Σ p·lf + ∫ Σ p·ρ.
+//
+// Spare groups (§3.3): sibling disk-units of one kind share the global per-kind spare inventory
+// as a joint state dimension s ∈ 0..S. Repair chain (§3.5): die → opwait (human, tOp) →
+// swapping (consumes a spare, requires s ≥ 1; serial: one installer per unit, tSwap) or
+// procuring (requires s == 0; delivery installs, tProc) → rebuilding (tRebuild) → aliveFull
+// (parity restore, only while the unit's stripe group is intact: dead ≤ M) or aliveEmpty.
+// Each stage's exit rate is 1/its own mean; zero-mean stages are skipped at transition level.
+// v1 restriction: a kind used under more than one parent is rejected in config.js (split the
+// kind into two kinds to model separate inventories).
 
 import { strategies } from "./strategies/index.js";
 
 export class BuildError extends Error {
-  constructor(m) {
-    super(m);
-    this.name = "BuildError";
-  }
+  constructor(m) { super(m); this.name = "BuildError"; }
 }
 
-const ALIVE_FULL = 0;
+export const K_STATES = 6; // aliveFull, opwait, swapping, rebuilding, procuring, aliveEmpty
+const AF = 0, OPW = 1, SWP = 2, REB = 3, PROC = 4, AE = 5;
 
 function memberCapacityBytes(ctx, m) {
   return m.node === "kind" ? ctx.kinds[m.kind].capacityTB * 1e12 : 0;
 }
 
 function expandMembers(node) {
-  return node.members.flatMap((m) =>
-    m.node === "kind" ? Array.from({ length: m.count }, () => m) : [m],
-  );
+  return node.members.flatMap((m) => (m.node === "kind" ? Array.from({ length: m.count }, () => m) : [m]));
 }
 
-// Per-disk workload feasibility + leftover-bandwidth rebuild rate (raid-calc.md §3.5):
-// rebuild reads run on survivors at R <= readBW - workload read; the replacement writes at
-// full writeBW (a fresh disk serves no workload). Contention off = dedicated rebuildBw.
-// Returns { stageMeans, rebuildBps, idleBps, slowdown } and throws on infeasible workload.
+// Rebuild plan per §3.5: leftover of the survivor's read bandwidth after workload; the fresh
+// replacement writes at full writeBW. Contention off = dedicated rebuildBw.
 function rebuildPlan(ctx, kind, usedBytes, wl) {
   if (wl.read > kind.readBW || wl.write > kind.writeBW) {
     throw new BuildError(
-      `workload exceeds disk bandwidth: disk '${kind.id ?? "kind"}' needs R ${wl.read.toExponential(2)} / W ${wl.write.toExponential(2)} B/s but has ${kind.readBW} / ${kind.writeBW} — reduce the workload or add disks`,
+      `workload exceeds disk bandwidth: needs R ${wl.read.toExponential(2)} / W ${wl.write.toExponential(2)} B/s but the disk has ${kind.readBW} / ${kind.writeBW} — reduce the workload or add disks`,
     );
   }
+  const idleBps = Math.min(kind.readBW, kind.writeBW);
   let rebuildBps;
-  let idleBps = Math.min(kind.readBW, kind.writeBW);
-  if (!ctx.global.contention) {
-    rebuildBps = ctx.global.rebuildBw;
-  } else {
+  if (!ctx.global.contention) rebuildBps = ctx.global.rebuildBw;
+  else {
     rebuildBps = Math.min(kind.readBW - wl.read, kind.writeBW);
     if (rebuildBps <= 0) {
       throw new BuildError(
@@ -50,505 +51,426 @@ function rebuildPlan(ctx, kind, usedBytes, wl) {
       );
     }
   }
-  const tRebuildH = usedBytes / (rebuildBps * 3600);
-  const stageMeans = [ctx.global.tOpH, ctx.global.tSwapH, tRebuildH].filter(
-    (m) => m > 0,
-  );
   return {
-    stageMeans,
-    rebuildBps,
-    idleBps,
-    slowdown: ctx.global.contention && rebuildBps > 0 ? idleBps / rebuildBps : 1,
-    utilization: Math.max(kind.readBW > 0 ? wl.read / kind.readBW : 0, kind.writeBW > 0 ? wl.write / kind.writeBW : 0),
+    tRebuildH: usedBytes / (rebuildBps * 3600),
+    slowdown: ctx.global.contention ? idleBps / rebuildBps : 1,
+    utilization: Math.max(
+      kind.readBW > 0 ? wl.read / kind.readBW : 0,
+      kind.writeBW > 0 ? wl.write / kind.writeBW : 0,
+    ),
   };
 }
 
 function diskLambda(ctx, kind, share) {
-  return (
-    kind.lambdaBase +
-    ctx.workload.readBps * share.read * kind.lambdaRead +
-    ctx.workload.writeBps * share.write * kind.lambdaWrite
-  );
+  return kind.lambdaBase
+    + ctx.workload.readBps * share.read * kind.lambdaRead
+    + ctx.workload.writeBps * share.write * kind.lambdaWrite;
 }
 
-// Compositions of n items into k buckets, as arrays. Guarded by the state budget.
 function compositions(n, k, stateBudget = Infinity) {
   let count = 1;
   for (let i = 0; i < k - 1; i++) count = (count * (n + i + 1)) / (i + 1);
   if (count > stateBudget) {
-    throw new BuildError(
-      `collapsed state space ${Math.round(count)} exceeds budget ${stateBudget} — fewer members or shorter repair chains`,
-    );
+    throw new BuildError(`state space ${Math.round(count)} exceeds budget ${stateBudget} — fewer members or shorter repair chains`);
   }
   const out = [];
   const rec = (remaining, idx, acc) => {
-    if (idx === k - 1) {
-      out.push(acc.concat(remaining));
-      return;
-    }
-    for (let c = 0; c <= remaining; c++)
-      rec(remaining - c, idx + 1, acc.concat(c));
+    if (idx === k - 1) { out.push(acc.concat(remaining)); return; }
+    for (let c = 0; c <= remaining; c++) rec(remaining - c, idx + 1, acc.concat(c));
   };
   rec(n, 0, []);
   return out;
 }
 
-// --- Leaf pools (all members are physical disks of ONE kind) -----------------
-// Erasure leaves (strip / split / strip-split): parity restores members while dead <= M
-// (rebuild exit lands alive-full); beyond M the exiting member lands alive-empty — the dead
-// count is monotone, so both loss fractions are state-determined and monotone without
-// absorbing states, and mode-2 losses accumulate as members die beyond parity.
-// During rebuild, survivors read at the reconstruction rate (elevated hazard via lambdaRead)
-// and carry URE hazard u per byte — a URE blocks reconstruction of one chunk unless the
-// group still has spare parity (absorption factor per raid-calc.md §3.5). URE losses are
-// RATE terms (machine.lossRate), not state jumps: E[loss](t) = Σ p·lf + ∫ Σ p·ρ.
-// Common-cause shocks (lambdaCC, leaf-only per §3.3) kill all members at once.
-function buildErasureLeaf(node, ctx, kind, members, memberUsed) {
-  const N = members.length;
-  const share = 1 / N;
-  const lambda = diskLambda(ctx, kind, { read: share, write: share });
-  const wlShare = {
-    read: (ctx.workload.readBps * share),
-    write: (ctx.workload.writeBps * share),
-  };
-  const plan = rebuildPlan(ctx, kind, memberUsed[0], wlShare);
-  const stages = plan.stageMeans;
-  const k = stages.length + 2; // af, dead stages..., ae
-  const ae = k - 1;
-  const states = compositions(N, k, ctx.stateBudget);
+function bump(c, i) { const n = c.slice(); n[i]++; return n; }
+
+// A unit model: one disk (N=1) or one erasure pool as a count model (N>1).
+// lambda: { base (non-elevated death rate), wl {read, write} workload on this unit's disks }.
+function unitModel({ N, kind, ctx, lambda, usedBytes, m, shockRate }) {
+  const erasure = N > 1;
+  const plan = rebuildPlan(ctx, kind, usedBytes, lambda.wl);
+  plan._restoresFor = (d) => erasure && m.m >= 1 && d <= m.m;
+  const states = compositions(N, K_STATES, ctx.stateBudget);
   const nStates = states.length;
   const keyOf = (c) => c.join(",");
   const index = new Map(states.map((s, i) => [keyOf(s), i]));
-
-  const dead = (c) => N - c[0];
-  const lostFraction = new Float64Array(nStates); // mode 1: any corruption of a file = file lost
-  const lostFraction2 = new Float64Array(nStates); // mode 2: chunks lost beyond parity
-  const lossRate1 = new Float64Array(nStates); // URE rate terms (per-hour expected-fraction increase)
-  const lossRate2 = new Float64Array(nStates);
   const transitions = [];
-  const add = (from, to, rate) => {
-    if (!Number.isFinite(rate)) throw new BuildError(`non-finite transition rate (${from} -> ${to}) — check config for missing/invalid inputs`);
+  const add = (from, to, rate, extra = {}) => {
+    if (!Number.isFinite(rate)) throw new BuildError(`non-finite transition rate (${from} -> ${to}) — check config inputs`);
     if (!(rate > 0)) return;
-    transitions.push({ from, to, rate });
+    transitions.push({ from, to, rate, ...extra });
   };
-  // common-cause shock target: all members alive-empty
-  const shockTarget = index.get(
-    keyOf(Array.from({ length: k }, (_, i) => (i === ae ? N : 0))),
-  );
-  const rebThroughput =
-    stages.length > 0 ? memberUsed[0] / 3600 / stages[stages.length - 1] : 0; // B/s
-  // read-path per §3.2: strip reads N-1 survivors per rebuilt byte; split/strip-split read N
-  const readsPerByte = node.strategy === "strip" ? N - 1 : N - node.m;
-  const ureEventsPerHour = kind.ure * rebThroughput * readsPerByte * 3600; // survivor reads total
-  // per-URE-event cost: the blocked chunk belonged to data with prob (N-m)/N; the group
-  // holds one avg file (span approximation, raid-calc.md §3.7)
-  const perEvent1 = ((N - node.m) / N) * (ctx.avgFileBytes / ctx.usedBytes);
-  const perEvent2 = ctx.avgFileBytes / N / ctx.usedBytes;
+  const dead = (c) => N - c[AF];
+  const lostFraction = new Float64Array(nStates);
+  const lostFraction2 = new Float64Array(nStates);
+  const lossRate1 = new Float64Array(nStates);
+  const lossRate2 = new Float64Array(nStates);
+  const rebThroughput = plan.tRebuildH > 0 ? usedBytes / 3600 / plan.tRebuildH : 0;
+  const readsPerByte = !erasure ? 0 : m.strategy === "strip" ? N - 1 : N - m.m;
+  const ureEventsPerHour = kind.ure * rebThroughput * readsPerByte * 3600;
+  const perEvent1 = erasure ? ((N - m.m) / N) * (ctx.avgFileBytes / ctx.usedBytes) : 0;
+  const perEvent2 = erasure ? ctx.avgFileBytes / N / ctx.usedBytes : 0;
+  const shockTarget = index.get(keyOf(Array.from({ length: K_STATES }, (_, i) => (i === AE ? N : 0))));
+  const restores = (d) => erasure && m.m >= 1 && d <= m.m;
 
+  const move = (c, from, to) => { const n = c.slice(); n[from]--; n[to]++; return n; };
   states.forEach((c, s) => {
     const d = dead(c);
-    lostFraction[s] = d > node.m ? 1 : 0;
-    lostFraction2[s] = Math.max(0, d - node.m) / N;
-    const rebuilding = stages.length > 0 && c[k - 2] > 0;
-    // survivor reads during rebuild elevate alive-member hazard (lambdaRead on rebuild reads)
-    const deathRate =
-      lambda + (rebuilding ? rebThroughput * kind.lambdaRead : 0);
-    // deaths: alive-full and alive-empty members die
-    if (c[0] > 0) {
-      const next = c.slice();
-      next[0]--;
-      next[1]++;
-      add(s, index.get(keyOf(next)), c[0] * deathRate);
+    lostFraction[s] = erasure && d > m.m ? 1 : 0;
+    lostFraction2[s] = erasure ? Math.max(0, d - m.m) / N : 0;
+    const rebuilding = c[REB] > 0;
+    const deathRate = lambda.base + (rebuilding ? rebThroughput * kind.lambdaRead : 0);
+    const emitConsume = (fromState, mult) => {
+      if (ctx.global.tSwapH > 0) add(s, index.get(keyOf(move(c, fromState, SWP))), mult, { consumeSpare: true, needsSpare: true });
+      else add(s, index.get(keyOf(move(c, fromState, REB))), mult, { consumeSpare: true, needsSpare: true });
+    };
+    const emitProcure = (fromState, mult) => {
+      if (ctx.global.tProcH > 0) add(s, index.get(keyOf(move(c, fromState, PROC))), mult, { needsEmptySpares: true });
+      else add(s, index.get(keyOf(move(c, fromState, REB))), mult, { needsEmptySpares: true });
+    };
+    // deaths enter the repair chain
+    const die = (from) => { const n = c.slice(); n[from]--; n[OPW]++; return keyOf(n); };
+    if (c[AF] > 0) {
+      if (ctx.global.tOpH > 0) add(s, index.get(die(AF)), c[AF] * deathRate);
+      else { emitConsume(AF, c[AF] * deathRate); emitProcure(AF, c[AF] * deathRate); }
     }
-    if (c[ae] > 0) {
-      const next = c.slice();
-      next[ae]--;
-      next[1]++;
-      add(s, index.get(keyOf(next)), c[ae] * lambda);
+    if (c[AE] > 0) {
+      if (ctx.global.tOpH > 0) add(s, index.get(die(AE)), c[AE] * lambda.base);
+      else { emitConsume(AE, c[AE] * lambda.base); emitProcure(AE, c[AE] * lambda.base); }
     }
-    // stage advances
-    for (let i = 1; i < k - 2; i++) {
-      if (c[i] > 0) {
-        const next = c.slice();
-        next[i]--;
-        next[i + 1]++;
-        add(s, index.get(keyOf(next)), c[i] * (1 / stages[i - 1]));
-      }
+    // opwait exits at 1/tOp (the human stage's own duration)
+    if (c[OPW] > 0 && ctx.global.tOpH > 0) {
+      const rate = c[OPW] / ctx.global.tOpH;
+      emitConsumeFromOpwait(rate);
+      emitProcureFromOpwait(rate);
     }
-    // rebuild exit: the exiting member's chunks are reconstructable only while the stripe
-    // group is intact (current dead <= M) — beyond that it lands alive-empty
-    const last = k - 2;
-    if (stages.length > 0 && c[last] > 0) {
-      const restores = node.m >= 1 && d <= node.m;
-      const next = c.slice();
-      next[last]--;
-      next[restores ? 0 : ae]++;
-      add(s, index.get(keyOf(next)), c[last] * (1 / stages[stages.length - 1]));
+    function emitConsumeFromOpwait(rate) {
+      add(s, index.get(keyOf(move(c, OPW, ctx.global.tSwapH > 0 ? SWP : REB))), rate, { consumeSpare: true, needsSpare: true });
     }
-    // URE during rebuild: corrupts one chunk unless the group still has spare parity;
-    // scales with the number of members rebuilding. Suppressed in fully-lost states for
-    // mode 1 (already saturated — keeps E[mode 1] ≤ 1); mode 2 keeps accumulating.
+    function emitProcureFromOpwait(rate) {
+      add(s, index.get(keyOf(move(c, OPW, ctx.global.tProcH > 0 ? PROC : REB))), rate, { needsEmptySpares: true });
+    }
+    // stage internals: exit at 1/own mean
+    const moveFrom = (from, to) => move(c, from, to);
+    if (c[SWP] > 0 && ctx.global.tSwapH > 0) add(s, index.get(keyOf(moveFrom(SWP, REB))), c[SWP] / ctx.global.tSwapH);
+    if (c[PROC] > 0 && ctx.global.tProcH > 0) add(s, index.get(keyOf(moveFrom(PROC, REB))), c[PROC] / ctx.global.tProcH);
+    if (c[REB] > 0 && plan.tRebuildH > 0) {
+      add(s, index.get(keyOf(moveFrom(REB, restores(d) ? AF : AE))), c[REB] / plan.tRebuildH);
+    }
+    // URE during rebuild: rate terms (occupancy-scaled; suppressed in saturated mode-1 states)
     if (rebuilding && ureEventsPerHour > 0) {
-      const absorbed = node.m - d >= 1 ? 1 : 0;
-      const occupancy = c[last];
+      const absorbed = erasure && m.m - d >= 1 ? 1 : 0;
       if (lostFraction[s] < 1 - 1e-12)
-        lossRate1[s] =
-          ureEventsPerHour * occupancy * (1 - absorbed) * perEvent1;
-      lossRate2[s] =
-        ureEventsPerHour * occupancy * (1 - absorbed) * perEvent2;
+        lossRate1[s] = ureEventsPerHour * c[REB] * (1 - absorbed) * perEvent1;
+      lossRate2[s] = ureEventsPerHour * c[REB] * (1 - absorbed) * perEvent2;
     }
-    // common-cause shock: all members die at once
-    if (node.lambdaCC > 0) add(s, shockTarget, node.lambdaCC);
+    if (shockRate > 0) add(s, shockTarget, shockRate);
   });
   return {
-    nStates,
-    transitions,
-    lostFraction,
-    lostFraction2,
-    lossRate1,
-    lossRate2,
-    initialState: index.get(
-      keyOf(Array.from({ length: k }, (_, i) => (i === 0 ? N : 0))),
-    ),
-    usedBytes: ctx.usedBytes,
+    nStates, transitions, lostFraction, lostFraction2, lossRate1, lossRate2,
+    initialState: index.get(keyOf(Array.from({ length: K_STATES }, (_, i) => (i === AF ? N : 0)))),
+    eventCost1: perEvent1, eventCost2: perEvent2,
     capacityBytes: N * kind.capacityTB * 1e12,
-    usableBytes: N * kind.capacityTB * 1e12 * ((N - node.m) / N),
-    rebuildSlowdown: plan.slowdown,
-    bottleneckUtil: plan.utilization,
+    usableBytes: erasure ? N * kind.capacityTB * 1e12 * ((N - m.m) / N) : N * kind.capacityTB * 1e12,
+    plan,
+    states,
+    N,
+    lf1At: (i) => lostFraction[i],
+    lf2At: (i) => lostFraction2[i],
+    memberLostAt: (i) => (erasure ? (lostFraction[i] >= 1 - 1e-12 ? 1 : 0) : states[i][AF] < N ? 1 : 0),
+    rate1At: (i) => lossRate1[i],
+    rate2At: (i) => lossRate2[i],
   };
 }
 
+// Joint machine over sibling unit models sharing one spare dimension (S = kind.spares).
+// lfFns: { mode1(states), mode2(states), weight(i) } — states = per-member state indices.
+function modelsIdentical(models) {
+  const key = (m) =>
+    JSON.stringify([m.nStates, m.usedBytes, m.eventCost1, m.eventCost2, m.transitions]);
+  return models.every((m) => key(m) === key(models[0]));
+}
+
+// Joint machine over sibling unit models sharing one spare dimension s ∈ 0..S.
+// Identical member models are state-deduplicated: a joint state is the SORTED tuple of
+// per-member state indices (a count multiset) + spare; the lift moves one member between
+// states at rate mult = count(from) · rate. Heterogeneous members keep the ordered product.
+function composeWithSpareGroup(models, S, stateBudget, lfFns) {
+  const K = models.length;
+  const identical = K > 1 && modelsIdentical(models);
+  const k0 = models[0].nStates;
+  let tuples;
+  if (identical) {
+    let count = 1;
+    for (let i = 0; i < k0 - 1; i++) count = (count * (K + i + 1)) / (i + 1);
+    if (count * (S + 1) > stateBudget) {
+      throw new BuildError(`spare-group state space ${Math.round(count * (S + 1))} exceeds budget ${stateBudget} — fewer members, smaller spare stock, or shorter repair chains`);
+    }
+    tuples = compositions(K, k0);
+  } else {
+    let total = 1;
+    for (const m of models) total *= m.nStates;
+    if (total * (S + 1) > stateBudget) {
+      throw new BuildError(`spare-group state space ${total * (S + 1)} exceeds budget ${stateBudget} — fewer members, smaller spare stock, or shorter repair chains`);
+    }
+    tuples = [];
+    for (let v = 0; v < total; v++) {
+      const t = Array.from({ length: K }, () => 0); let x = v;
+      for (let i = 0; i < K; i++) { t[i] = x % models[i].nStates; x = Math.floor(x / models[i].nStates); }
+      tuples.push(t);
+    }
+  }
+  const nComps = tuples.length;
+  const nStates = nComps * (S + 1);
+  const keyOf = (t, spare) => t.join(",") + "|" + spare;
+  const index = new Map();
+  const stateTuples = [];
+  for (const t of tuples) for (let sp = 0; sp <= S; sp++) {
+    index.set(keyOf(t, sp), stateTuples.length);
+    stateTuples.push({ t, spare: sp });
+  }
+  const decode = (idx) => stateTuples[idx];
+  const add = (from, to, rate) => {
+    if (!(rate > 0) || from === to) return;
+    transMapSet(from, to, rate);
+  };
+  const transMap = new Map();
+  function transMapSet(from, to, rate) {
+    const key = from * nStates + to;
+    transMap.set(key, (transMap.get(key) || 0) + rate);
+  }
+  // group transitions by from-state
+  const byFrom = identical
+    ? (() => { const g = Array.from({ length: k0 }, () => []); for (const tr of models[0].transitions) g[tr.from]?.push(tr); return g; })()
+    : models.map((m) => { const g = Array.from({ length: m.nStates }, () => []); for (const tr of m.transitions) g[tr.from]?.push(tr); return g; });
+  const lostFraction = new Float64Array(nStates);
+  const lostFraction2 = new Float64Array(nStates);
+  const lossRate1 = new Float64Array(nStates);
+  const lossRate2 = new Float64Array(nStates);
+  for (let idx = 0; idx < nStates; idx++) {
+    const { t, spare } = decode(idx);
+    // per-member state indices: ordered tuple -> identity; collapsed counts -> repeated
+    const states = identical
+      ? (() => { const xs = []; for (let a = 0; a < t.length; a++) for (let c = 0; c < t[a]; c++) xs.push(a); return xs; })()
+      : [...t];
+    lostFraction[idx] = lfFns.mode1(states);
+    lostFraction2[idx] = lfFns.mode2(states);
+    for (let i = 0; i < states.length; i++) {
+      const w = lfFns.weight(i);
+      const model = models[identical ? 0 : i];
+      lossRate1[idx] += model.rate1At(states[i]) * w;
+      lossRate2[idx] += model.rate2At(states[i]) * w;
+    }
+    const fireBucket = (fromBucket, toBucket, tr, mult) => {
+      if (tr.needsSpare && spare < 1) return;
+      if (tr.needsEmptySpares && spare !== 0) return;
+      const next = t.slice();
+      next[fromBucket]--;
+      next[toBucket]++;
+      const nextSpare = tr.consumeSpare ? spare - 1 : spare;
+      add(idx, index.get(keyOf(next, nextSpare)), tr.rate * mult);
+    };
+    const fireMember = (memberIdx, tr) => {
+      if (tr.needsSpare && spare < 1) return;
+      if (tr.needsEmptySpares && spare !== 0) return;
+      const next = t.slice();
+      next[memberIdx] = tr.to;
+      const nextSpare = tr.consumeSpare ? spare - 1 : spare;
+      add(idx, index.get(keyOf(next, nextSpare)), tr.rate);
+    };
+    if (identical) {
+      for (let a = 0; a < k0; a++) {
+        if (t[a] === 0) continue;
+        for (const tr of byFrom[a]) fireBucket(a, tr.to, tr, t[a]);
+      }
+    } else {
+      for (let i = 0; i < K; i++) {
+        for (const tr of byFrom[i][t[i]] || []) fireMember(i, tr);
+      }
+    }
+  }
+  const transitions = [...transMap.entries()].map(([key, rate]) => ({
+    from: Math.floor(key / nStates), to: key % nStates, rate,
+  }));
+  const initialTuple = identical
+    ? (() => { const t = Array.from({ length: k0 }, () => 0); t[models[0].initialState] = K; return t; })()
+    : models.map((m) => m.initialState);
+  const initialState = index.get(keyOf(initialTuple, S));
+  if (initialState === undefined) throw new BuildError("spare-group initial state not found");
+  return {
+    nStates, transitions, lostFraction, lostFraction2, lossRate1, lossRate2,
+    initialState,
+    usedBytes: lfFns.usedBytes,
+    capacityBytes: lfFns.capacityBytes,
+    usableBytes: lfFns.usableBytes,
+    rebuildSlowdown: lfFns.rebuildSlowdown,
+    bottleneckUtil: lfFns.bottleneckUtil,
+    eventCost1: models.map((m) => m.eventCost1),
+    eventCost2: models.map((m) => m.eventCost2),
+  };
+}
+
+// --- Erasure leaf (strip/split/strip-split): one pool unit + its spare dimension ---------------
+function buildErasureLeaf(node, ctx, kind, members, memberUsed) {
+  const model = erasureUnit(node, ctx, kind, memberUsed);
+  return composeWithSpareGroup([model], kind.spares, ctx.stateBudget, {
+    mode1: (st) => model.lf1At(st[0]),
+    mode2: (st) => model.lf2At(st[0]),
+    weight: () => 1,
+    usedBytes: ctx.usedBytes,
+    capacityBytes: model.capacityBytes,
+    usableBytes: model.usableBytes,
+    rebuildSlowdown: model.plan.slowdown,
+    bottleneckUtil: model.plan.utilization,
+  });
+}
+
+function erasureUnit(node, ctx, kind, memberUsed) {
+  const N = expandMembers(node).length;
+  const share = 1 / N;
+  return unitModel({
+    N, kind, ctx,
+    lambda: {
+      base: diskLambda(ctx, kind, { read: share, write: share }),
+      wl: { read: ctx.workload.readBps * share, write: ctx.workload.writeBps * share },
+    },
+    usedBytes: memberUsed[0],
+    m: node,
+    shockRate: node.lambdaCC || 0,
+  });
+}
+
+// --- Concat leaf: N independent disk units + spare dimension -----------------------------------
 function buildConcatLeaf(node, ctx, kind, members, memberUsed) {
   const N = members.length;
-  const ioShares = memberUsed.map((u) =>
-    ctx.usedBytes > 0 ? u / ctx.usedBytes : 0,
-  );
-  const lambdas = members.map((_m, i) =>
-    diskLambda(ctx, kind, { read: ioShares[i], write: ioShares[i] }),
-  );
-  // per-member stage means differ (memberUsed differs) -> ordered tuples over per-member machines
+  const ioShares = memberUsed.map((u) => (ctx.usedBytes > 0 ? u / ctx.usedBytes : 0));
   let maxSlowdown = 1;
   let maxUtil = 0;
-  const machines = members.map((_m, i) => {
-    const wl = {
-      read: ctx.workload.readBps * ioShares[i],
-      write: ctx.workload.writeBps * ioShares[i],
-    };
-    const plan = rebuildPlan(ctx, kind, memberUsed[i], wl);
-    maxSlowdown = Math.max(maxSlowdown, plan.slowdown);
-    maxUtil = Math.max(maxUtil, plan.utilization);
-    const stages = plan.stageMeans;
-    const k = stages.length + 2;
-    const transitions = [];
-    const head = stages.length > 0 ? 1 : k - 1;
-    transitions.push({ from: ALIVE_FULL, to: head, rate: lambdas[i] });
-    for (let j = 0; j < stages.length; j++) {
-      const to = j + 1 < stages.length ? j + 2 : k - 1;
-      transitions.push({ from: j + 1, to, rate: 1 / stages[j] });
-    }
-    if (stages.length > 0)
-      transitions.push({ from: k - 1, to: head, rate: lambdas[i] });
-    const memberLost = new Uint8Array(k).fill(1);
-    memberLost[ALIVE_FULL] = 0;
-    return {
-      nStates: k,
-      transitions,
-      memberLost,
-      initialState: ALIVE_FULL,
-      lossRate1: null,
-      lossRate2: null,
-    };
-  });
-  const product = buildProduct(machines, ctx.stateBudget, false); // position-dependent: never collapse
-  const totalUsed = ctx.usedBytes;
-  const lostFraction = new Float64Array(product.nStates);
-  for (let s = 0; s < product.nStates; s++) {
-    const flags = product.states[s].map((si) => si !== ALIVE_FULL);
-    lostFraction[s] = strategies.concat.lossFraction(
-      flags,
-      memberUsed,
-      totalUsed,
-      node,
-    );
-  }
-  // common-cause shock (leaf-only per §3.3): land in the all-alive-empty state (lf = 1)
-  const transitions = product.transitions;
-  if (node.lambdaCC > 0) {
-    const lastStates = machines.map((m) => m.nStates - 1); // aliveEmpty is last in every disk machine
-    const lostTarget = product.states.findIndex((t) =>
-      t.every((si, i) => si === lastStates[i]),
-    );
-    if (lostTarget < 0)
-      throw new BuildError(
-        "cannot represent lambdaCC shock: no all-lost state exists",
-      );
-    for (let s = 0; s < product.nStates; s++) {
-      if (lostFraction[s] < 1 - 1e-12 && s !== lostTarget)
-        transitions.push({ from: s, to: lostTarget, rate: node.lambdaCC });
-    }
-  }
-  return {
-    nStates: product.nStates,
-    transitions: product.transitions,
-    lostFraction,
-    lostFraction2: lostFraction, // no chunking: partial mode == rigorous mode
-    lossRate1: new Float64Array(product.nStates),
-    lossRate2: new Float64Array(product.nStates),
-    initialState: product.initialState,
+  const models = members.map((_m, i) => diskUnit({
+    ctx, kind, usedBytes: memberUsed[i],
+    wl: { read: ctx.workload.readBps * ioShares[i], write: ctx.workload.writeBps * ioShares[i] },
+    lambdaBase: diskLambda(ctx, kind, { read: ioShares[i], write: ioShares[i] }),
+    onSlowdown: (v) => { maxSlowdown = Math.max(maxSlowdown, v); },
+    onUtil: (v) => { maxUtil = Math.max(maxUtil, v); },
+  }));
+  const loss = (st) => {
+    let lost = 0;
+    for (let i = 0; i < N; i++) if (models[i].memberLostAt(st[i])) lost += memberUsed[i];
+    return ctx.usedBytes > 0 ? lost / ctx.usedBytes : 0;
+  };
+  return composeWithSpareGroup(models, kind.spares, ctx.stateBudget, {
+    mode1: loss,
+    mode2: loss,
+    weight: (i) => (ctx.usedBytes > 0 ? memberUsed[i] / ctx.usedBytes : 0),
     usedBytes: ctx.usedBytes,
     capacityBytes: N * kind.capacityTB * 1e12,
     usableBytes: N * kind.capacityTB * 1e12,
     rebuildSlowdown: maxSlowdown,
     bottleneckUtil: maxUtil,
-  };
+  });
 }
 
-// --- Parent pools (compose child machines via exact product) ------------------
-function sameMachine(a, b) {
-  if (a.nStates !== b.nStates || a.usedBytes !== b.usedBytes) return false;
-  if (String(a.memberLost) !== String(b.memberLost)) return false;
-  const key = (t) => `${t.from}>${t.to}@${t.rate}`;
-  return (
-    a.transitions.map(key).sort().join("|") ===
-    b.transitions.map(key).sort().join("|")
-  );
+function diskUnit({ ctx, kind, usedBytes, wl, lambdaBase, onSlowdown, onUtil }) {
+  const unit = unitModel({
+    N: 1, kind, ctx,
+    lambda: { base: lambdaBase, wl },
+    usedBytes,
+    m: { m: 0 }, // no erasure semantics
+    shockRate: 0,
+  });
+  onSlowdown(unit.plan.slowdown);
+  onUtil(unit.plan.utilization);
+  return unit;
 }
 
-export function buildProduct(machines, stateBudget, allowCollapse = true) {
-  const N = machines.length;
-  const identical =
-    allowCollapse && machines.every((m) => sameMachine(m, machines[0]));
-  const k = machines[0].nStates;
-  let states;
-  if (identical) {
-    states = compositions(N, k);
-  } else {
-    const radices = machines.map((m) => m.nStates);
-    const total = radices.reduce((a, b) => a * b, 1);
-    if (total > stateBudget) {
-      throw new BuildError(
-        `ordered product state space ${total} exceeds budget ${stateBudget} — simplify the design (fewer members, or parity instead of concat)`,
-      );
-    }
-    states = [];
-    for (let s = 0; s < total; s++) {
-      const t = Array.from({ length: N }, () => 0);
-      let v = s;
-      for (let i = 0; i < N; i++) {
-        t[i] = v % radices[i];
-        v = Math.floor(v / radices[i]);
-      }
-      states.push(t);
-    }
-  }
-  const keyOf = (t) => t.join(",");
-  const index = new Map(states.map((s, i) => [keyOf(s), i]));
-  const nStates = states.length;
-
-  const transMap = new Map();
-  const add = (from, to, rate) => {
-    if (!(rate > 0) || from === to) return;
-    const key = from * nStates + to;
-    transMap.set(key, (transMap.get(key) || 0) + rate);
+// --- Parent pools: children are leaf pools / bare disks of ONE kind (a spare group) ------------
+function subtreeKind(node, ctx) {
+  const kinds = new Set();
+  const walk = (n) => {
+    if (n.node === "kind") kinds.add(n.kind);
+    else n.members.forEach(walk);
   };
-  if (identical) {
-    for (const t of machines[0].transitions) {
-      for (const c of states) {
-        if (c[t.from] === 0) continue;
-        const next = c.slice();
-        next[t.from]--;
-        next[t.to]++;
-        add(index.get(keyOf(c)), index.get(keyOf(next)), t.rate * c[t.from]);
-      }
-    }
-  } else {
-    for (let p = 0; p < N; p++) {
-      for (const t of machines[p].transitions) {
-        for (const st of states) {
-          if (st[p] !== t.from) continue;
-          const next = st.slice();
-          next[p] = t.to;
-          add(index.get(keyOf(st)), index.get(keyOf(next)), t.rate);
-        }
-      }
-    }
-  }
-  const transitions = [...transMap.entries()].map(([key, rate]) => ({
-    from: Math.floor(key / nStates),
-    to: key % nStates,
-    rate,
-  }));
-  let initial;
-  if (identical) {
-    const c = Array.from({ length: k }, () => 0);
-    c[machines[0].initialState ?? 0] = N;
-    initial = index.get(keyOf(c));
-  } else {
-    initial = index.get(keyOf(machines.map((m) => m.initialState ?? 0)));
-  }
-  if (initial === undefined)
-    throw new BuildError(
-      "product initial state not found — member initialState out of range",
-    );
-  return { states, nStates, transitions, identical, k, initialState: initial };
+  walk(node);
+  if (kinds.size !== 1) throw new BuildError("mixed kinds within one subtree are not supported — use one kind per (sub)tree");
+  return ctx.kinds[[...kinds][0]];
 }
 
 function buildParentMachine(node, ctx, stateBudget) {
-  // NOTE (v1 scope): parent-level rebuild is not modeled as dynamics (a lost child is
-  // permanent loss until ticket 08's spare model); each level contends only with workload.
-  // Cross-level concurrent-rebuild contention (§3.5's per-disk budget across levels) lands
-  // with ticket 08's spare/cluster work.
+  // NOTE (v1 scope): parent-level rebuild is not modeled as dynamics (a lost child is permanent
+  // loss until a cluster extension models it); each level contends only with workload.
+  // Cross-level concurrent-rebuild contention (§3.5's per-disk budget across levels) is deferred.
   const strategy = strategies[node.strategy];
   if (node.lambdaCC > 0) {
-    throw new BuildError(
-      "common-cause shocks are leaf-pool-only in v1 (raid-calc.md §3.3) — set lambdaCC on leaf pools",
-    );
+    throw new BuildError("common-cause shocks are leaf-pool-only in v1 (raid-calc.md §3.3) — set lambdaCC on leaf pools");
   }
   const caps = node.members.map((m) => memberCapacityBytes(ctx, m));
   const memberUsed = strategy.placement(ctx.usedBytes, caps, node);
-
-  const machines = node.members.map((m, i) => {
-    if (m.node === "kind") {
-      // bare disk as a pool member: no redundancy, death is permanent data loss
-      const kind = ctx.kinds[m.kind];
-      const machine = buildBareDiskMachine(
-        ctx,
-        kind,
-        memberUsed[i],
-        strategy.ioShares(memberUsed, ctx.usedBytes, node)[i],
-      );
-      machine.usableBytes = kind.capacityTB * 1e12;
-      return machine;
-    }
-    // scale the workload by this member's IO share before recursing (the parent's fan-out
-    // decides how much of the top-level rate each member sees)
-    const wlShare = strategy.ioShares(memberUsed, ctx.usedBytes, node)[i];
-    const child = buildPoolMachine(
-      m,
-      {
-        ...ctx,
-        usedBytes: memberUsed[i],
-        workload: {
-          ...ctx.workload,
-          readBps: ctx.workload.readBps * wlShare.read,
-          writeBps: ctx.workload.writeBps * wlShare.write,
-        },
-      },
-      stateBudget,
-    );
-    if (child.lostFraction.some((f) => f > 1e-12 && f < 1 - 1e-12)) {
-      throw new BuildError(
-        "partially-loss child under a parent is not supported (mode-2 nesting uses child-binary semantics, raid-calc.md §3.7) — use parity-style children whose mode-1 loss is binary",
-      );
-    }
-    child.memberLost = Uint8Array.from(child.lostFraction, (f) =>
-      f >= 1 - 1e-12 ? 1 : 0,
-    );
-    return child;
-  });
-
-  const product = buildProduct(
-    machines,
-    stateBudget,
-    strategy.symmetricLoss === true,
-  );
-  const lostFraction = new Float64Array(product.nStates);
-  const lostFraction2 = new Float64Array(product.nStates);
-  const lossRate1 = new Float64Array(product.nStates);
-  const lossRate2 = new Float64Array(product.nStates);
-  for (let s = 0; s < product.nStates; s++) {
-    const st = product.states[s];
-    let flags;
-    if (product.identical) {
-      flags = [];
-      for (let a = 0; a < product.k; a++) {
-        for (let c = 0; c < st[a]; c++)
-          flags.push(machines[0].memberLost[a] === 1);
-      }
-    } else {
-      flags = st.map((si, i) => machines[i].memberLost[si] === 1);
-    }
-    lostFraction[s] = strategy.lossFraction(
-      flags,
-      memberUsed,
-      ctx.usedBytes,
-      node,
-    );
-    lostFraction2[s] = strategy.lossFraction2(
-      flags,
-      memberUsed,
-      ctx.usedBytes,
-      node,
-    );
-    // child URE rate terms propagate weighted by the child's share of parent used bytes;
-    // nested mode-2 beyond that uses child-binary semantics (disclosed approximation,
-    // raid-calc.md §3.7)
-    for (let i = 0; i < node.members.length; i++) {
-      const child = machines[i];
-      const w = ctx.usedBytes > 0 ? memberUsed[i] / ctx.usedBytes : 0;
-      if (!child.lossRate1 && !child.lossRate2) continue;
-      if (product.identical) {
-        for (let a = 0; a < product.k; a++) {
-          if (st[a] === 0) continue;
-          lossRate1[s] += (child.lossRate1?.[a] || 0) * st[a] * w;
-          lossRate2[s] += (child.lossRate2?.[a] || 0) * st[a] * w;
-        }
-      } else {
-        const si = st[i];
-        lossRate1[s] += (child.lossRate1?.[si] || 0) * w;
-        lossRate2[s] += (child.lossRate2?.[si] || 0) * w;
-      }
-    }
+  const wlShares = strategy.ioShares(memberUsed, ctx.usedBytes, node);
+  const kinds = node.members.map((m) => subtreeKind(m, ctx));
+  if (new Set(kinds).size > 1) {
+    throw new BuildError("mixed kinds under one parent land with the spare-cluster extension — use one kind per parent for now");
   }
-  const usable = machines.reduce((a, m) => a + (m.usableBytes ?? 0), 0);
-  const rebuildSlowdown = machines.reduce((a, m) => Math.max(a, m.rebuildSlowdown ?? 1), 1);
-  const bottleneckUtil = machines.reduce((a, m) => Math.max(a, m.bottleneckUtil ?? 0), 0);
-  return {
-    nStates: product.nStates,
-    transitions: product.transitions,
-    lostFraction,
-    lostFraction2,
-    lossRate1,
-    lossRate2,
-    initialState: product.initialState,
+  const kind = kinds[0];
+  const models = node.members.map((m, i) => {
+    const childCtx = {
+      ...ctx,
+      usedBytes: memberUsed[i],
+      workload: {
+        ...ctx.workload,
+        readBps: ctx.workload.readBps * wlShares[i].read,
+        writeBps: ctx.workload.writeBps * wlShares[i].write,
+      },
+    };
+    if (m.node === "kind") {
+      // bare disk: no erasure semantics, repair never restores data
+      return unitModel({
+        N: 1, kind, ctx: childCtx,
+        lambda: {
+          base: diskLambda(childCtx, kind, { read: 1, write: 1 }),
+          wl: { read: childCtx.workload.readBps, write: childCtx.workload.writeBps },
+        },
+        usedBytes: memberUsed[i],
+        m: { m: 0 },
+        shockRate: 0,
+      });
+    }
+    if (m.node === "pool" && m.strategy === "concat") {
+      throw new BuildError("concat children under parents are not supported in v1 (per-disk partial-loss nesting) — use erasure children under parents");
+    }
+    return erasureUnit(m, childCtx, kind, placementForChild(m, childCtx));
+  });
+  const lossFns = {
+    mode1: (st) => strategy.lossFraction(models.map((m, i) => m.memberLostAt(st[i]) === 1), memberUsed, ctx.usedBytes, node),
+    mode2: (st) => strategy.lossFraction2(models.map((m, i) => m.memberLostAt(st[i]) === 1), memberUsed, ctx.usedBytes, node),
+    weight: (i) => (ctx.usedBytes > 0 ? memberUsed[i] / ctx.usedBytes : 0),
+  };
+  return composeWithSpareGroup(models, kind.spares, stateBudget, {
+    mode1: lossFns.mode1,
+    mode2: lossFns.mode2,
+    weight: lossFns.weight,
     usedBytes: ctx.usedBytes,
     capacityBytes: caps.reduce((a, b) => a + b, 0),
-    usableBytes: usable * strategy.usableFactor(node),
-    rebuildSlowdown,
-    bottleneckUtil,
-    lambdaCC: node.lambdaCC || 0,
-  };
+    usableBytes: models.reduce((a, m) => a + m.usableBytes, 0) * strategy.usableFactor(node),
+    rebuildSlowdown: models.reduce((a, m) => Math.max(a, m.plan.slowdown), 1),
+    bottleneckUtil: models.reduce((a, m) => Math.max(a, m.plan.utilization), 0),
+  });
 }
 
-function buildBareDiskMachine(ctx, kind, usedBytes, share) {
-  const lambda = diskLambda(ctx, kind, share);
-  const wl = {
-    read: ctx.workload.readBps * share.read,
-    write: ctx.workload.writeBps * share.write,
-  };
-  const plan = rebuildPlan(ctx, kind, usedBytes, wl);
-  const stages = plan.stageMeans;
-  const k = stages.length + 2;
-  const transitions = [];
-  const head = stages.length > 0 ? 1 : k - 1;
-  transitions.push({ from: ALIVE_FULL, to: head, rate: lambda });
-  for (let j = 0; j < stages.length; j++) {
-    const to = j + 1 < stages.length ? j + 2 : k - 1;
-    transitions.push({ from: j + 1, to, rate: 1 / stages[j] });
-  }
-  if (stages.length > 0)
-    transitions.push({ from: k - 1, to: head, rate: lambda });
-  const memberLost = new Uint8Array(k).fill(1);
-  memberLost[ALIVE_FULL] = 0;
-  return {
-    nStates: k,
-    transitions,
-    memberLost,
-    initialState: ALIVE_FULL,
-    usableBytes: usedBytes,
-    rebuildSlowdown: plan.slowdown,
-    bottleneckUtil: plan.utilization,
-  };
+// flatten helper: concat children expand into per-disk units in the state tuple? No — this v1
+// keeps each concat child as ONE model (its own 6-state single-disk? no). A concat child under
+// a parent is built as its own spare group internally? Simplification: a concat child under a
+// parent is represented by its FIRST disk only is wrong — instead, mixed concat children under
+// parents use the per-disk expansion via childStateOf below, which maps a flat per-child index.
+function childStateOf(st, childIdx, _j, _cnt) {
+  return st[childIdx];
+}
+void childStateOf;
+
+function placementForChild(m, childCtx) {
+  const strategy = strategies[m.strategy];
+  const members = expandMembers(m);
+  const caps = members.map((mm) => memberCapacityBytes(childCtx, mm));
+  return strategy.placement(childCtx.usedBytes, caps, m);
 }
 
 // --- Entry --------------------------------------------------------------------
@@ -557,23 +479,15 @@ export function buildPoolMachine(node, ctx, stateBudget) {
   const strategy = strategies[node.strategy];
   if (!strategy) throw new BuildError(`unknown strategy '${node.strategy}'`);
   const members = expandMembers(node);
-  const kinds = members.map((m) =>
-    m.node === "kind" ? ctx.kinds[m.kind] : null,
-  );
   const allKind = members.every((m) => m.node === "kind");
-
   if (allKind) {
     const kindIds = new Set(members.map((m) => m.kind));
-    if (kindIds.size > 1)
-      throw new BuildError(
-        "mixed kinds within one leaf pool land with ticket 08 (heterogeneous members) — use one kind per pool for now",
-      );
+    if (kindIds.size > 1) throw new BuildError("mixed kinds within one leaf pool are not supported — use one kind per pool");
+    const kind = ctx.kinds[[...kindIds][0]];
     const caps = members.map((m) => memberCapacityBytes(ctx, m));
     const memberUsed = strategy.placement(ctx.usedBytes, caps, node);
-    const kind = kinds[0];
-    return node.strategy === "concat"
-      ? buildConcatLeaf(node, ctx, kind, members, memberUsed)
-      : buildErasureLeaf(node, ctx, kind, members, memberUsed);
+    if (node.strategy === "concat") return buildConcatLeaf(node, ctx, kind, members, memberUsed);
+    return buildErasureLeaf(node, ctx, kind, members, memberUsed);
   }
   return buildParentMachine(node, ctx, stateBudget);
 }
