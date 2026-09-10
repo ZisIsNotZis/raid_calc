@@ -84,7 +84,7 @@ describe("composition", () => {
     times.forEach((ti, i) => expect(got[i]).toBeCloseTo(1 - Math.exp(-lambda * ti), 5));
   });
 
-  it("strip(1,1) over two strip(3,1) pools: mirror-of-pools beats a single pool", { timeout: 120000 }, () => {
+  it("strip(1,1) over two strip(3,1) pools: exact independence identity + beats a single pool", { timeout: 120000 }, () => {
     const ctx = CTX();
     const child = { node: "pool", strategy: "strip", d: 3, m: 1, lambdaCC: 0, members: [{ node: "kind", kind: "d", count: 4 }] };
     const parent = { node: "pool", strategy: "strip", d: 1, m: 1, lambdaCC: 0, members: [child, child] };
@@ -93,11 +93,54 @@ describe("composition", () => {
     expect(machine.nStates).toBe(120);
     const times = [0, 1e5, 1e6];
     const parentP = anyLossCurve(machine, times);
-    const childMachine = buildPoolMachine(child, ctx, 1e6);
+    // standalone reference: SAME usedBytes the parent distributes to each child (8TB)
+    const childMachine = buildPoolMachine(child, { ...ctx, usedBytes: 8e12 }, 1e6);
     const childP = anyLossCurve(childMachine, times);
+    // composition exactness: independent identical children -> P(parent loss) = P(child lost)^2
+    times.forEach((_t, i) => expect(parentP[i]).toBeCloseTo(childP[i] ** 2, 10));
     times.forEach((t, i) => { if (t > 0) expect(parentP[i]).toBeLessThan(childP[i]); });
     // monotone
     for (let i = 1; i < parentP.length; i++) expect(parentP[i]).toBeGreaterThanOrEqual(parentP[i - 1] - 1e-12);
+  });
+
+  it("expected lost fraction is monotone", () => {
+    const ctx = CTX({ ctx: { usedBytes: 4e12 } });
+    const machine = buildPoolMachine(stripPool(3, 1), ctx, 1e6);
+    const e = expectedLossCurve(machine, [0, 1e4, 1e5, 1e6]);
+    for (let i = 1; i < e.length; i++) expect(e[i]).toBeGreaterThanOrEqual(e[i - 1] - 1e-12);
+  });
+
+  it("common-cause shock: lambdaCC-only pool loses at exactly lambdaCC", () => {
+    const ctx = CTX({ ctx: { usedBytes: 4e12 } });
+    const machine = buildPoolMachine(
+      { node: "pool", strategy: "strip", d: 3, m: 1, lambdaCC: 1e-5, members: [{ node: "kind", kind: "d", count: 4 }] },
+      { ...ctx, kinds: { d: { ...ctx.kinds.d, lambdaBase: 0 } } }, 1e6,
+    );
+    const times = [0, 1e4, 1e5];
+    const p = anyLossCurve(machine, times);
+    times.forEach((t, i) => expect(p[i]).toBeCloseTo(1 - Math.exp(-1e-5 * t), 9));
+  });
+
+  it("URE during rebuild: corrupts stripes when parity is exhausted (M=1)", { timeout: 120000 }, () => {
+    // no random deaths (lambda=0), long rebuild, meaningful URE: loss accumulates only while rebuilding
+    const ctx = CTX({ ctx: { usedBytes: 4e12 } });
+    const machine = buildPoolMachine(
+      { node: "pool", strategy: "strip", d: 3, m: 1, lambdaCC: 0, members: [{ node: "kind", kind: "d", count: 4 }] },
+      { ...ctx, kinds: { d: { ...ctx.kinds.d, lambdaBase: 0, ure: 1e-10 } } }, 1e6,
+    );
+    const times = [0, 1e3, 1e4];
+    const p = anyLossCurve(machine, times);
+    // with lambda=0 the pool never degrades on its own; URE only fires... verify no premature loss
+    times.forEach((_t, i) => expect(p[i]).toBe(0));
+    // now force a degraded state via tiny lambda and check URE adds loss beyond deaths alone
+    const withDeaths = buildPoolMachine(
+      { node: "pool", strategy: "strip", d: 3, m: 1, lambdaCC: 0, members: [{ node: "kind", kind: "d", count: 4 }] },
+      { ...ctx, kinds: { d: { ...ctx.kinds.d, ure: 1e-10 } } }, 1e6,
+    );
+    const base = buildPoolMachine(stripPool(3, 1), ctx, 1e6);
+    const pUre = anyLossCurve(withDeaths, [0, 1e5])[1];
+    const pBase = anyLossCurve(base, [0, 1e5])[1];
+    expect(pUre).toBeGreaterThan(pBase);
   });
 
   it("rejects a partially-loss child (concat) under a parent", () => {

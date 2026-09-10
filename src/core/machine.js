@@ -35,8 +35,13 @@ function diskLambda(ctx, kind, share) {
     + ctx.workload.writeBps * share.write * kind.lambdaWrite;
 }
 
-// Compositions of n items into k buckets, as arrays.
-function compositions(n, k) {
+// Compositions of n items into k buckets, as arrays. Guarded by the state budget.
+function compositions(n, k, stateBudget = Infinity) {
+  let count = 1;
+  for (let i = 0; i < k - 1; i++) count = count * (n + i + 1) / (i + 1);
+  if (count > stateBudget) {
+    throw new BuildError(`collapsed state space ${Math.round(count)} exceeds budget ${stateBudget} — fewer members or shorter repair chains`);
+  }
   const out = [];
   const rec = (remaining, idx, acc) => {
     if (idx === k - 1) { out.push(acc.concat(remaining)); return; }
@@ -47,6 +52,11 @@ function compositions(n, k) {
 }
 
 // --- Leaf pools (all members are physical disks of ONE kind) -----------------
+// Strip leaf: parity restores members while dead <= M; beyond that the pool's data is gone
+// (states with dead > M are absorbing). During rebuild, survivors read at the reconstruction
+// rate (elevated hazard via lambdaRead) and carry URE hazard u per byte — a URE corrupts a
+// stripe unless the group still has spare parity (absorption factor per raid-calc.md §3.5).
+// Common-cause shocks (lambdaCC, leaf-only per §3.3) kill all members at once.
 function buildStripLeaf(node, ctx, kind, members, memberUsed) {
   const N = members.length;
   const share = 1 / N;
@@ -54,7 +64,7 @@ function buildStripLeaf(node, ctx, kind, members, memberUsed) {
   const stages = diskStageMeans(ctx, kind, memberUsed[0]);
   const k = stages.length + 2; // af, dead stages..., ae
   const ae = k - 1;
-  const states = compositions(N, k);
+  const states = compositions(N, k, ctx.stateBudget);
   const nStates = states.length;
   const keyOf = (c) => c.join(",");
   const index = new Map(states.map((s, i) => [keyOf(s), i]));
@@ -67,13 +77,21 @@ function buildStripLeaf(node, ctx, kind, members, memberUsed) {
     if (!(rate > 0)) return;
     transitions.push({ from, to, rate });
   };
+  // shock + URE land in a designated absorbing all-lost state (all members alive-empty)
+  const lostTarget = index.get(keyOf(Array.from({ length: k }, (_, i) => (i === ae ? N : 0))));
+  const rebThroughput = stages.length > 0 ? memberUsed[0] / 3600 / stages[stages.length - 1] : 0; // B/s
+  const urePerHour = kind.ure * rebThroughput * 3600; // hazard per hour of rebuilding
+
   states.forEach((c, s) => {
     lostFraction[s] = lost(c) ? 1 : 0;
     if (lost(c)) return; // absorbing: data gone, pool abandoned
-    // deaths: alive-full and alive-empty members die at lambda
+    const rebuilding = stages.length > 0 && c[k - 2] > 0;
+    // survivor reads during rebuild elevate alive-member hazard (lambdaRead on rebuild reads)
+    const deathRate = lambda + (rebuilding ? rebThroughput * kind.lambdaRead : 0);
+    // deaths: alive-full and alive-empty members die
     if (c[0] > 0) {
       const next = c.slice(); next[0]--; next[1]++;
-      add(s, index.get(keyOf(next)), c[0] * lambda);
+      add(s, index.get(keyOf(next)), c[0] * deathRate);
     }
     if (c[ae] > 0) {
       const next = c.slice(); next[ae]--; next[1]++;
@@ -92,8 +110,14 @@ function buildStripLeaf(node, ctx, kind, members, memberUsed) {
       const next = c.slice(); next[last]--; next[0]++;
       add(s, index.get(keyOf(next)), c[last] * (1 / stages[stages.length - 1]));
     }
+    // URE during rebuild: corrupts a stripe unless the group still has spare parity
+    if (rebuilding && urePerHour > 0) {
+      const absorbed = node.m - dead(c) >= 1 ? 1 : 0;
+      add(s, lostTarget, urePerHour * (1 - absorbed));
+    }
+    // common-cause shock: all members die at once
+    if (node.lambdaCC > 0) add(s, lostTarget, node.lambdaCC);
   });
-  void node;
   return {
     nStates, transitions, lostFraction,
     initialState: index.get(keyOf(Array.from({ length: k }, (_, i) => (i === 0 ? N : 0)))),
@@ -130,6 +154,16 @@ function buildConcatLeaf(node, ctx, kind, members, memberUsed) {
     const flags = product.states[s].map((si) => si !== ALIVE_FULL);
     lostFraction[s] = strategies.concat.lossFraction(flags, memberUsed, totalUsed, node);
   }
+  // common-cause shock (leaf-only per §3.3): land in the all-alive-empty state (lf = 1)
+  const transitions = product.transitions;
+  if (node.lambdaCC > 0) {
+    const lastStates = machines.map((m) => m.nStates - 1); // aliveEmpty is last in every disk machine
+    const lostTarget = product.states.findIndex((t) => t.every((si, i) => si === lastStates[i]));
+    if (lostTarget < 0) throw new BuildError("cannot represent lambdaCC shock: no all-lost state exists");
+    for (let s = 0; s < product.nStates; s++) {
+      if (lostFraction[s] < 1 - 1e-12 && s !== lostTarget) transitions.push({ from: s, to: lostTarget, rate: node.lambdaCC });
+    }
+  }
   return {
     nStates: product.nStates, transitions: product.transitions, lostFraction,
     initialState: product.initialState,
@@ -155,14 +189,15 @@ export function buildProduct(machines, stateBudget, allowCollapse = true) {
   if (identical) {
     states = compositions(N, k);
   } else {
-    const total = k ** N;
+    const radices = machines.map((m) => m.nStates);
+    const total = radices.reduce((a, b) => a * b, 1);
     if (total > stateBudget) {
       throw new BuildError(`ordered product state space ${total} exceeds budget ${stateBudget} — simplify the design (fewer members, or parity instead of concat)`);
     }
     states = [];
     for (let s = 0; s < total; s++) {
       const t = Array.from({ length: N }, () => 0); let v = s;
-      for (let i = 0; i < N; i++) { t[i] = v % k; v = Math.floor(v / k); }
+      for (let i = 0; i < N; i++) { t[i] = v % radices[i]; v = Math.floor(v / radices[i]); }
       states.push(t);
     }
   }
@@ -206,11 +241,15 @@ export function buildProduct(machines, stateBudget, allowCollapse = true) {
   } else {
     initial = index.get(keyOf(machines.map((m) => m.initialState ?? 0)));
   }
+  if (initial === undefined) throw new BuildError("product initial state not found — member initialState out of range");
   return { states, nStates, transitions, identical, k, initialState: initial };
 }
 
 function buildParentMachine(node, ctx, stateBudget) {
   const strategy = strategies[node.strategy];
+  if (node.lambdaCC > 0) {
+    throw new BuildError("common-cause shocks are leaf-pool-only in v1 (raid-calc.md §3.3) — set lambdaCC on leaf pools");
+  }
   const caps = node.members.map((m) => memberCapacityBytes(ctx, m));
   const memberUsed = strategy.placement(ctx.usedBytes, caps, node);
 

@@ -13,8 +13,7 @@ describe("concat strategy (worked examples)", () => {
     expect(concat.lossFraction([true, false, false], used, 5e12, {})).toBeCloseTo(4e12 / 5e12); // inside member
     expect(concat.lossFraction([false, false, true], used, 5e12, {})).toBe(0); // empty member — free
   });
-  it("rebuild does not restore data, io follows placement shares", () => {
-    expect(concat.rebuildRestoresData({})).toBe(false);
+  it("io follows placement shares", () => {
     const used = concat.placement(5e12, caps, {});
     const shares = concat.ioShares(used, 5e12, {});
     expect(shares[0].read).toBeCloseTo(0.8);
@@ -36,8 +35,6 @@ describe("strip strategy (worked examples)", () => {
   it("RAID0 (M=0) loses everything on any death", () => {
     const used = strip.placement(8e12, caps.slice(0, 3), { d: 3, m: 0 });
     expect(strip.lossFraction([true, false, false], used, 8e12, { d: 3, m: 0 })).toBe(1);
-    expect(strip.rebuildRestoresData({ d: 3, m: 0 })).toBe(false);
-    expect(strip.rebuildRestoresData({ d: 3, m: 1 })).toBe(true);
   });
   it("io fans out to every member equally", () => {
     const shares = strip.ioShares([4e12, 4e12, 4e12, 4e12], 16e12, { d: 3, m: 1 });

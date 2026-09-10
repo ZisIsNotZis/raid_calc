@@ -99,7 +99,7 @@ export function validate(config) {
   requireNumber(g, "tOpH", "global");
   requireNumber(g, "tSwapH", "global");
   requireNumber(g, "tProcH", "global");
-  requireNumber(g, "rebuildBw", "global", { min: 0 });
+  requireNumber(g, "rebuildBw", "global", { min: 0, exclusive: g.contention === false }); // dedicated bw must be positive
   if (typeof g.contention !== "boolean") throw new ConfigError("global.contention must be boolean");
 
   const w = config.workload || {};

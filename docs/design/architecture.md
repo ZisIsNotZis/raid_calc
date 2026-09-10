@@ -22,12 +22,12 @@ One schema is the SSOT for UI, engine, optimizer, and saved files:
   "kinds":   [{ "id": "hdd8", "capacityTB": 8, "lambdaBase": 2.8e-6, "lambdaRead": 0.9e-12, "lambdaWrite": 1.4e-12, "ure": 7.9e-15, "readBW": 190e6, "writeBW": 170e6, "count": 12, "spares": 1 }],
   "tree":    { "node": "pool", "strategy": "split", "n": 2, "m": 1, "lambdaCC": 1e-7,
                "members": [ { "node": "pool", "strategy": "strip", "d": 3, "m": 1, "lambdaCC": 1e-7, "members": [{ "node": "kind", "kind": "hdd8", "count": 4 }] } ] },
-  "global":  { "topSec": 12, "swapSec": 600, "procSec": 172800, "timeUnit": "h", "contention": true, "rebuildBw": 150e6, "lambdaCCDefault": 1e-7 },
+  "global":  { "tOpH": 12, "tSwapH": 0.167, "tProcH": 48, "rebuildBw": 150e6, "contention": true },
   "workload": { "storeTB": 40, "readBps": 200e6, "writeBps": 50e6, "avgFileMB": 8, "horizonY": 5 }
 }
 ```
 
-- `rebuildBw` is used when `contention: false` (dedicated rebuild bandwidth); with contention on it is ignored. `lambdaCCDefault` pre-fills new pool nodes. Usage ratio is **derived**: `u = storeTB ÷ usable` — `storeTB` is the SSOT input. `schemaVersion` gates localStorage/import round-trips.
+- Units are hard-coded SI-ish: times in hours (`tOpH/tSwapH/tProcH`), rates per hour, IO in bytes/s, capacities in TB (decimal). `rebuildBw` is used when `contention: false` (dedicated rebuild bandwidth); with contention on it is ignored. Usage ratio is **derived**: `u = storeTB ÷ usable` — `storeTB` is the SSOT input. `schemaVersion` gates localStorage/import round-trips. `lambdaCC` is per pool (leaf-pool shocks; parent-level λcc is rejected at build).
 - **Inventory validation rule**: Σ disks referenced by the tree per kind + that kind's `spares` ≤ `count` — hand-built configs are rejected at validation, same as optimizer output.
 
 - Engine is pure: `evaluate(config) → curves + per-node previews`. No engine state outside the config; UI/optimizer only produce configs.

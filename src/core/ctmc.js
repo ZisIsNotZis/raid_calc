@@ -1,4 +1,5 @@
-// CTMC solver: integrates dp/dt = p·Q with adaptive RK4.
+// CTMC solver: fixed-step RK4 (step = 1/maxRate, inside the stability region; accuracy verified
+// against closed forms in tests) integrating dp/dt = p·Q.
 // A machine exposes state-determined, path-monotone lostFraction(s), so
 //   expectedLostFraction(t) = Σ_s p(s,t)·lf(s)
 // is exact. P(any loss by t) comes from the killed chain (buildKilled) where loss transitions move
@@ -48,7 +49,7 @@ function integrate(machine, times) {
   const p = new Float64Array(n);
   p[machine.initialState ?? 0] = 1;
   const k1 = new Float64Array(n), k2 = new Float64Array(n), k3 = new Float64Array(n), k4 = new Float64Array(n), tmp = new Float64Array(n);
-  const dtStep = maxRate > 0 ? 1 / maxRate : Infinity;
+  const dtStep = maxRate > 0 ? 0.5 / maxRate : Infinity;
   const out = [Array.from(p)];
   for (let i = 1; i < times.length; i++) {
     let remaining = times[i] - times[i - 1];

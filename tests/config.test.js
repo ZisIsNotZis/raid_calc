@@ -51,7 +51,7 @@ describe("config validation", () => {
     expect(() => validate(c)).toThrow(/usable capacity/);
   });
 
-  it("rejects duplicated kind ids", () => {
+  it("rejects non-finite kind params", () => {
     // object keys dedupe silently; guard via explicit check is unnecessary — but a kind with
     // non-finite params must fail
     const c = baseConfig();
