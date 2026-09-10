@@ -1,6 +1,6 @@
 # Ticket: 09-mc-crosscheck
 
-- **Status:** ready-for-agent
+- **Status:** claimed
 - **Need-review:** yes (behavior changes)
 
 ## Issue

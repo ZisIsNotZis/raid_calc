@@ -1,6 +1,6 @@
 # Ticket: 08-spare-clusters
 
-- **Status:** ready-for-agent
+- **Status:** claimed
 - **Need-review:** yes (behavior changes)
 
 ## Issue
