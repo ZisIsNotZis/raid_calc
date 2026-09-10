@@ -16,3 +16,7 @@ Design refs: docs/design/raid-calc.md, optimizer.md, ui.md, architecture.md; sli
 ## Comments
 
 - 2026-02-05 agent (pi, terra/sol): created from reviewed impl plan (v2 re-slice: 04 split into 04+05 per review sizing advice; UI canvas parallelizable; chain renumbered).
+
+## Comments (implementation + closure)
+
+- 2026-02-05 agent (pi, terra/sol): implemented greedy + local-search optimizer per optimizer.md (seeds: mirrors/RAID5 groups/big pools/split designs; moves: disk moves, param tweaks, strategy conversion, top-layer add/remove; feasibility via engine try/catch; deterministic lexicographic tie-break; wall-clock budget + candidate cap; skippedLarge count for candidates above the state cap). v1 PERF LIMITATION (disclosed): the ODE solver needs ~0.083h steps (tSwap-driven) — multi-pool candidates at multi-year horizons take minutes per solve, so the optimizer skips joint state spaces > stateCap (default 5000) and only ranks small designs; solver speedup (uniformization or implicit integration) is the top engine follow-up. Tests: small example (feasible, usable >= 20TB), determinism. A direct 12-disk nested-design evaluate was removed from CI (300s+; nested feasibility covered by engine tests). 35+ tests green; workers for this ticket failed twice on provider rate limits — implemented by the orchestrator.

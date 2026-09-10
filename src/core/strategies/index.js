@@ -5,6 +5,8 @@
 //   (rebuild restore semantics live in the machine builders: parity restores while dead <= M)
 // Mode-2 loss weights arrive with ticket 06 (per-span accounting).
 
+import { BuildError } from "../errors.js";
+
 const even = (totalUsed, n) => Array.from({ length: n }, () => totalUsed / n);
 
 export const concat = {
@@ -20,7 +22,7 @@ export const concat = {
       remaining -= take;
     }
     if (remaining > 1e-6)
-      throw new Error(
+      throw new BuildError(
         "concat placement overflow: usage exceeds total capacity",
       );
     return out;
