@@ -16,10 +16,8 @@
 // kind into two kinds to model separate inventories).
 
 import { strategies } from "./strategies/index.js";
-
-export class BuildError extends Error {
-  constructor(m) { super(m); this.name = "BuildError"; }
-}
+import { BuildError as BuildErrorBase } from "./errors.js";
+export const BuildError = BuildErrorBase;
 
 export const K_STATES = 6; // aliveFull, opwait, swapping, rebuilding, procuring, aliveEmpty
 const AF = 0, OPW = 1, SWP = 2, REB = 3, PROC = 4, AE = 5;
