@@ -39,19 +39,11 @@ const SAMPLE_CONFIG = {
   },
   tree: {
     node: "pool",
-    strategy: "split",
-    n: 2,
+    strategy: "strip",
+    d: 1,
     m: 1,
     lambdaCC: 0,
     members: [
-      {
-        node: "pool",
-        strategy: "strip",
-        d: 3,
-        m: 1,
-        lambdaCC: 1e-7,
-        members: [{ node: "kind", kind: "hdd8", count: 4 }],
-      },
       {
         node: "pool",
         strategy: "strip",
@@ -78,7 +70,7 @@ const SAMPLE_CONFIG = {
     contention: true,
   },
   workload: {
-    storeTB: 40,
+    storeTB: 20,
     readBps: 200e6,
     writeBps: 50e6,
     avgFileMB: 8,

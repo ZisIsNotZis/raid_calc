@@ -17,7 +17,9 @@ export function logScale(domain, range) {
   const [r0, r1] = range;
   const l0 = Math.log10(d0);
   const l1 = Math.log10(d1);
-  return (v) => r0 + ((Math.log10(v) - l0) / (l1 - l0)) * (r1 - r0);
+  // clamp non-positive values (loss = 0 early in the horizon) to the domain floor
+  return (v) =>
+    r0 + ((Math.log10(Math.max(v, d0)) - l0) / (l1 - l0)) * (r1 - r0);
 }
 
 // SVG path from points [[x,y],...]; straight segments.
@@ -82,7 +84,7 @@ export function renderChart(
   const plotW = width - pad * 2;
   const plotH = height - pad * 2;
   const yMax = series
-    .flatMap((s) => s.points.map((p) => p[1]))
+    .flatMap((s) => (s.y ? s.y : s.points.map((p) => p[1])))
     .reduce((a, b) => Math.max(a, b), 1);
   const yDomain = logY
     ? [Math.max(1e-3, yMax / 1e4), Math.max(yMax, 1)]
@@ -90,7 +92,7 @@ export function renderChart(
   const yScale = logY
     ? logScale(yDomain, [pad + plotH, pad])
     : linearScale(yDomain, [pad + plotH, pad]);
-  const xDomain = [0, series[0] ? series[0].xMax : 1];
+  const xDomain = [0, series[0] && series[0].x ? series[0].x[series[0].x.length - 1] : 1];
 
   // grid + axes
   for (const ty of logY ? logTicks(yDomain) : [0, yDomain[1] / 2, yDomain[1]]) {
