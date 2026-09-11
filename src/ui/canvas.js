@@ -1,3 +1,4 @@
+import { tidyLayout } from "./layout.js";
 // Node view-model + tree operations over the config JSON.
 // Pure functions: all take the config and return a NEW config (immutable style).
 // Node identity = path string: "tree" for the root pool, "tree.members[i]" for members,

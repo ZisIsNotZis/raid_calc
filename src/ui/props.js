@@ -95,7 +95,7 @@ export function renderProps(root, { config, selection, onSet, onSelect }) {
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") apply(input.value);
     });
-    return { input, setValue: (v) => (input.value = v ?? "") };
+    return wrap;
   };
 
   const select = (label, options, current, onPick) => {

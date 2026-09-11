@@ -167,11 +167,9 @@ describe("composition", () => {
       members: [child, child],
     };
     const machine = buildPoolMachine(parent, ctx, 1e6);
-    // children have K_STATES=6 layouts: child states = C(4+5,5) = 126; identical children
-    // collapse to compositions of 2 into 126 parts
-    const childStates = 126;
-    const expected = (childStates * (childStates + 1)) / 2;
-    expect(machine.nStates).toBe(expected);
+    // children have K_STATES=4 layouts: child states = C(4+3,3) = 35; identical children
+    // collapse to compositions of 2 into 35 parts = C(36,2) = 630
+    expect(machine.nStates).toBe((35 * 36) / 2);
     const times = [0, 5e4, 1e5];
     const parentP = anyLossCurve(machine, times);
     // standalone reference: SAME usedBytes the parent distributes to each child (8TB)
@@ -289,11 +287,12 @@ describe("composition", () => {
     // memberUsed = 4e12 at dedicated 5e7 B/s -> tRebuild = 22.2h; no feasibility error despite
     // heavy workload; slowdown reported as 1 (dedicated channel)
     expect(machine.rebuildSlowdown).toBe(1);
-    // regression: the rebuild-exit rate must be the DEDICATED rate 1/22.2h, not contended
-    const exitRate = machine.transitions
-      .filter((t) => t.to === 0 && t.rate > 0)
-      .reduce((a, t) => a + t.rate, 0);
-    expect(exitRate).toBeCloseTo(1 / (4e12 / (5e7 * 3600)), 6); // one rebuilding member exits at 1/tRebuild
+    // regression: the dedicated rebuild rate 1/22.2h must appear as a stage-exit rate
+    const dedicated = 1 / (4e12 / (5e7 * 3600));
+    const hasDedicatedExit = machine.transitions.some(
+      (t) => Math.abs(t.rate - dedicated) < 1e-9,
+    );
+    expect(hasDedicatedExit).toBe(true);
   });
 
   it("infeasible workload: per-disk bandwidth exceeded throws", () => {

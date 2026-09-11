@@ -19,8 +19,12 @@ import { strategies } from "./strategies/index.js";
 import { BuildError as BuildErrorBase } from "./errors.js";
 export const BuildError = BuildErrorBase;
 
-export const K_STATES = 6; // aliveFull, opwait, swapping, rebuilding, procuring, aliveEmpty
-const AF = 0, OPW = 1, SWP = 2, REB = 3, PROC = 4, AE = 5;
+// 4 unit states: aliveFull, repairing-with-spare, repairing-via-procurement, aliveEmpty.
+// Each repair PATH is a single mean-matched exponential stage (tOp + swap|proc + rebuild) —
+// the doc declares mean-matched waits (raid-calc.md §3.5); branching on spare availability
+// happens at repair ENTRY. ~100x fewer integration steps than a 3-stage chain.
+export const K_STATES = 4;
+const AF = 0, WS = 1, WP = 2, AE = 3;
 
 function memberCapacityBytes(ctx, m) {
   return m.node === "kind" ? ctx.kinds[m.kind].capacityTB * 1e12 : 0;
@@ -49,8 +53,14 @@ function rebuildPlan(ctx, kind, usedBytes, wl) {
       );
     }
   }
+  const tRebuildH = usedBytes / (rebuildBps * 3600);
+  const meanWithSpare = ctx.global.tOpH + ctx.global.tSwapH + tRebuildH;
+  const meanProc = ctx.global.tOpH + ctx.global.tProcH + tRebuildH;
   return {
-    tRebuildH: usedBytes / (rebuildBps * 3600),
+    tRebuildH,
+    meanWithSpare,
+    meanProc,
+    rebFraction: meanWithSpare > 0 ? tRebuildH / meanWithSpare : 1,
     slowdown: ctx.global.contention ? idleBps / rebuildBps : 1,
     utilization: Math.max(
       kind.readBW > 0 ? wl.read / kind.readBW : 0,
@@ -105,7 +115,8 @@ function unitModel({ N, kind, ctx, lambda, usedBytes, m, shockRate }) {
   const lossRate2 = new Float64Array(nStates);
   const rebThroughput = plan.tRebuildH > 0 ? usedBytes / 3600 / plan.tRebuildH : 0;
   const readsPerByte = !erasure ? 0 : m.strategy === "strip" ? N - 1 : N - m.m;
-  const ureEventsPerHour = kind.ure * rebThroughput * readsPerByte * 3600;
+  const ureEventsPerHour =
+    kind.ure * rebThroughput * readsPerByte * 3600 * plan.rebFraction;
   const perEvent1 = erasure ? ((N - m.m) / N) * (ctx.avgFileBytes / ctx.usedBytes) : 0;
   const perEvent2 = erasure ? ctx.avgFileBytes / N / ctx.usedBytes : 0;
   const shockTarget = index.get(keyOf(Array.from({ length: K_STATES }, (_, i) => (i === AE ? N : 0))));
@@ -116,51 +127,34 @@ function unitModel({ N, kind, ctx, lambda, usedBytes, m, shockRate }) {
     const d = dead(c);
     lostFraction[s] = erasure && d > m.m ? 1 : 0;
     lostFraction2[s] = erasure ? Math.max(0, d - m.m) / N : 0;
-    const rebuilding = c[REB] > 0;
-    const deathRate = lambda.base + (rebuilding ? rebThroughput * kind.lambdaRead : 0);
-    const emitConsume = (fromState, mult) => {
-      if (ctx.global.tSwapH > 0) add(s, index.get(keyOf(move(c, fromState, SWP))), mult, { consumeSpare: true, needsSpare: true });
-      else add(s, index.get(keyOf(move(c, fromState, REB))), mult, { consumeSpare: true, needsSpare: true });
-    };
-    const emitProcure = (fromState, mult) => {
-      if (ctx.global.tProcH > 0) add(s, index.get(keyOf(move(c, fromState, PROC))), mult, { needsEmptySpares: true });
-      else add(s, index.get(keyOf(move(c, fromState, REB))), mult, { needsEmptySpares: true });
-    };
-    // deaths enter the repair chain
-    const die = (from) => { const n = c.slice(); n[from]--; n[OPW]++; return keyOf(n); };
+    const repairing = c[WS] + c[WP] > 0;
+    // URE/lambdaRead hazards apply only during the rebuild portion of the collapsed stage
+    const rebFraction = plan.rebFraction;
+    const deathRate = lambda.base + (repairing ? rebThroughput * kind.lambdaRead * rebFraction : 0);
+    // deaths enter the repair chain; the spare-vs-procurement branch is decided at entry
     if (c[AF] > 0) {
-      if (ctx.global.tOpH > 0) add(s, index.get(die(AF)), c[AF] * deathRate);
-      else { emitConsume(AF, c[AF] * deathRate); emitProcure(AF, c[AF] * deathRate); }
+      add(s, index.get(keyOf(move(c, AF, WS))), c[AF] * deathRate, { consumeSpare: true, needsSpare: true });
+      add(s, index.get(keyOf(move(c, AF, WP))), c[AF] * deathRate, { needsEmptySpares: true });
     }
     if (c[AE] > 0) {
-      if (ctx.global.tOpH > 0) add(s, index.get(die(AE)), c[AE] * lambda.base);
-      else { emitConsume(AE, c[AE] * lambda.base); emitProcure(AE, c[AE] * lambda.base); }
+      add(s, index.get(keyOf(move(c, AE, WS))), c[AE] * lambda.base, { consumeSpare: true, needsSpare: true });
+      add(s, index.get(keyOf(move(c, AE, WP))), c[AE] * lambda.base, { needsEmptySpares: true });
     }
-    // opwait exits at 1/tOp (the human stage's own duration)
-    if (c[OPW] > 0 && ctx.global.tOpH > 0) {
-      const rate = c[OPW] / ctx.global.tOpH;
-      emitConsumeFromOpwait(rate);
-      emitProcureFromOpwait(rate);
+    // stage exits: restore iff the stripe group is intact (dead <= M)
+    if (c[WS] > 0 && plan.meanWithSpare > 0) {
+      add(s, index.get(keyOf(move(c, WS, restores(d) ? AF : AE))), c[WS] / plan.meanWithSpare);
     }
-    function emitConsumeFromOpwait(rate) {
-      add(s, index.get(keyOf(move(c, OPW, ctx.global.tSwapH > 0 ? SWP : REB))), rate, { consumeSpare: true, needsSpare: true });
+    if (c[WP] > 0 && plan.meanProc > 0) {
+      add(s, index.get(keyOf(move(c, WP, restores(d) ? AF : AE))), c[WP] / plan.meanProc);
     }
-    function emitProcureFromOpwait(rate) {
-      add(s, index.get(keyOf(move(c, OPW, ctx.global.tProcH > 0 ? PROC : REB))), rate, { needsEmptySpares: true });
-    }
-    // stage internals: exit at 1/own mean
-    const moveFrom = (from, to) => move(c, from, to);
-    if (c[SWP] > 0 && ctx.global.tSwapH > 0) add(s, index.get(keyOf(moveFrom(SWP, REB))), c[SWP] / ctx.global.tSwapH);
-    if (c[PROC] > 0 && ctx.global.tProcH > 0) add(s, index.get(keyOf(moveFrom(PROC, REB))), c[PROC] / ctx.global.tProcH);
-    if (c[REB] > 0 && plan.tRebuildH > 0) {
-      add(s, index.get(keyOf(moveFrom(REB, restores(d) ? AF : AE))), c[REB] / plan.tRebuildH);
-    }
-    // URE during rebuild: rate terms (occupancy-scaled; suppressed in saturated mode-1 states)
-    if (rebuilding && ureEventsPerHour > 0) {
+    // URE during repair: rate terms (occupancy-scaled, rebuild-fraction-weighted; suppressed
+    // in saturated mode-1 states)
+    if (repairing && ureEventsPerHour > 0) {
       const absorbed = erasure && m.m - d >= 1 ? 1 : 0;
+      const occupancy = c[WS] + c[WP];
       if (lostFraction[s] < 1 - 1e-12)
-        lossRate1[s] = ureEventsPerHour * c[REB] * (1 - absorbed) * perEvent1;
-      lossRate2[s] = ureEventsPerHour * c[REB] * (1 - absorbed) * perEvent2;
+        lossRate1[s] = ureEventsPerHour * rebFraction * occupancy * (1 - absorbed) * perEvent1;
+      lossRate2[s] = ureEventsPerHour * rebFraction * occupancy * (1 - absorbed) * perEvent2;
     }
     if (shockRate > 0) add(s, shockTarget, shockRate);
   });

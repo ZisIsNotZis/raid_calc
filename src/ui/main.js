@@ -33,7 +33,7 @@ const SAMPLE_CONFIG = {
       ure: 7.9e-15,
       readBW: 190e6,
       writeBW: 170e6,
-      count: 12,
+      count: 13,
       spares: 1,
     },
   },
@@ -42,7 +42,7 @@ const SAMPLE_CONFIG = {
     strategy: "split",
     n: 2,
     m: 1,
-    lambdaCC: 1e-7,
+    lambdaCC: 0,
     members: [
       {
         node: "pool",
@@ -359,12 +359,13 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       if (
         !selection ||
         selection === OUTPUT_ID ||
+        selection === "tree" ||
         selection.startsWith("kinds.")
       )
         return;
       const cfg = store.get();
       const pcfg = previewConfig(cfg, selection);
-      const { ok, result } = safeEvaluate(pcfg);
+      const { ok, result } = safeEvaluate(pcfg, { stateBudget: 20000 });
       const box = props.querySelector(".preview");
       if (!box) return;
       if (!ok) {
@@ -534,9 +535,18 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   }
 
   render();
-  run();
 
+  // assemble the app grid (header + sidebar + canvas + properties) into the root element
+  const wrap = document.createElement("div");
+  wrap.className = "app";
+  wrap.append(header, side, canvas, props);
+  rootEl.append(wrap);
   return { store, getState: () => store.get(), run, selection };
+}
+
+// self-bootstrap: works for both the dev page and the bundled single-file artifact
+if (typeof document !== "undefined" && document.getElementById("app")) {
+  createApp(document.getElementById("app"));
 }
 
 // --- tiny DOM helpers ---------------------------------------------------------

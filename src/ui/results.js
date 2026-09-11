@@ -4,14 +4,16 @@ import { validate } from "../core/config.js";
 import { renderChart, evaluateSeries, fmtBytes } from "./charts.js";
 import { TB, HOURS_PER_YEAR } from "../core/config.js";
 
-export function runConfig(config, { points = 101 } = {}) {
-  return evaluate(config, { points });
+export function runConfig(config, { points = 101, stateBudget } = {}) {
+  return evaluate(config, { points, stateBudget });
 }
 
 // Returns { ok: true, result } or { ok: false, error } — never throws.
-export function safeEvaluate(config) {
+// Preview evaluations use a small state budget so oversized subtrees fail fast (BuildError)
+// instead of blocking the main thread for minutes; the Run button evaluates with the full budget.
+export function safeEvaluate(config, { stateBudget } = {}) { // no default cap: Run uses the full budget
   try {
-    return { ok: true, result: runConfig(config) };
+    return { ok: true, result: runConfig(config, { stateBudget }) };
   } catch (err) {
     if (
       err instanceof ConfigError ||
