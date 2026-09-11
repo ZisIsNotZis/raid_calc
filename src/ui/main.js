@@ -93,10 +93,12 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   const exportBtn = btn("Export", "ghost");
   const undoBtn = btn("↶", "ghost");
   const redoBtn = btn("↷", "ghost");
+  const resetBtn = btn("Reset example", "ghost");
   const spacer = document.createElement("div");
   spacer.className = "spacer";
   header.appendChild(undoBtn);
   header.appendChild(redoBtn);
+  header.appendChild(resetBtn);
   header.appendChild(importBtn);
   header.appendChild(exportBtn);
   header.appendChild(runBtn);
@@ -136,16 +138,23 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
 
   // ---- store wiring ----------------------------------------------------------
 
+  // Structural edits and field edits are ALWAYS committed (the canvas must reflect what the
+  // user did); an invalid config is flagged via the disabled Run button + tooltip instead of
+  // silently rejected — transient invalid states are part of editing (ui.md).
   const commit = (mutator) => {
     try {
       const next = mutator(store.get());
-      validate(next); // throws on invalid config
+      let msg = "";
+      try {
+        validate(next);
+      } catch (err) {
+        msg = err.message;
+      }
       store.set(() => next);
+      setRunError(msg);
       return true;
     } catch (err) {
-      if (err instanceof ConfigError || err instanceof Error) {
-        setRunError(err.message);
-      }
+      setRunError(err.message);
       return false;
     }
   };
@@ -289,7 +298,15 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   };
 
   const addPoolNode = () => {
-    commit((cfg) => addPool(cfg, { parentPath: "tree" }));
+    const kid = Object.keys(store.get().kinds)[0];
+    commit((cfg) => {
+      let next = addPool(cfg, { parentPath: "tree", strategy: "concat" });
+      if (kid) {
+        const lastIndex = next.tree.members.length - 1;
+        next = connectDiskToPool(next, kid, `tree.members[${lastIndex}]`);
+      }
+      return next;
+    });
     render();
   };
 
@@ -514,25 +531,20 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
 
   // ---- autosave + boot -------------------------------------------------------
 
-  const autosave = () => store.saveLocal();
-  store.subscribe(autosave);
-  const saved = store.loadLocal();
-  if (saved) {
-    try {
-      validate(saved);
-      store.reset(saved);
-    } catch {
-      /* keep sample on invalid saved config */
-    }
-  }
+  // Deliberately no localStorage: refresh always restores the known-good SAMPLE_CONFIG.
+  // Users persist intentionally via Export/Import; Reset example provides an in-session reset.
+  resetBtn.addEventListener("click", () => {
+    store.reset(structuredClone(SAMPLE_CONFIG));
+    selection = "tree";
+    lastResult = null;
+    lastError = null;
+    render();
+  });
 
   render();
 
-  // assemble the app grid (header + sidebar + canvas + properties) into the root element
-  const wrap = document.createElement("div");
-  wrap.className = "app";
-  wrap.append(header, side, canvas, props);
-  rootEl.append(wrap);
+  // assemble the app grid directly into the root element (#app carries the grid CSS)
+  rootEl.append(header, side, canvas, props);
   return { store, getState: () => store.get(), run, selection };
 }
 

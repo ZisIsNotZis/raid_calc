@@ -65,9 +65,18 @@ export function renderProps(root, { config, selection, onSet, onSelect }) {
     wrap.className = "field";
     const lab = el("label", label);
     wrap.appendChild(lab);
+    if (key === null) return wrap; // section label: no input
     const input = document.createElement("input");
     input.type = "text";
     input.placeholder = placeholder ?? "";
+    const section = keyCtx[key] || "workload";
+    const raw = info.type === "kind"
+      ? info.node?.[key]
+      : info.type === "output"
+        ? config[section]?.[key]
+        : info.node?.[key];
+    const mbps = ["readBW", "writeBW", "readBps", "writeBps", "rebuildBw"].includes(key);
+    input.value = raw === undefined || raw === null ? "" : String(mbps ? raw / 1e6 : raw);
     wrap.appendChild(input);
     const unitEl = unit ? el("span", unit) : null;
     if (unitEl) {

@@ -240,10 +240,9 @@ export function renderCanvas({
   const positions = tidyLayout(layoutTree);
   void usedKinds;
 
-  const xScale = 40;
-  const yScale = 30;
-  const SX = (u) => 20 + u.x * xScale;
-  const SY = (u) => 20 + u.y * yScale;
+  // layout units are already pixel-scale (NODE_GAP/LEVEL_GAP in layout.js)
+  const SX = (u) => 24 + u.x;
+  const SY = (u) => 24 + u.y;
 
   const svg = document.createElementNS(svgNS, "svg");
   svg.setAttribute("class", "wires");
