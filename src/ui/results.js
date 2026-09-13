@@ -1,19 +1,19 @@
 // Results: run evaluation, render charts + summary, per-node preview (debounced).
 import { evaluate, ConfigError, BuildError } from "../core/evaluate.js";
 import { validate } from "../core/config.js";
-import { renderChart, evaluateSeries, fmtBytes } from "./charts.js";
+import { fmtBytes } from "./charts.js";
 import { TB, HOURS_PER_YEAR } from "../core/config.js";
 
-export function runConfig(config, { points = 101, stateBudget } = {}) {
+export function runConfig(config, { points, stateBudget } = {}) {
   return evaluate(config, { points, stateBudget });
 }
 
 // Returns { ok: true, result } or { ok: false, error } — never throws.
 // Preview evaluations use a small state budget so oversized subtrees fail fast (BuildError)
 // instead of blocking the main thread for minutes; the Run button evaluates with the full budget.
-export function safeEvaluate(config, { stateBudget } = {}) { // no default cap: Run uses the full budget
+export function safeEvaluate(config, { stateBudget, points } = {}) { // no default cap: Run uses the full budget
   try {
-    return { ok: true, result: runConfig(config, { stateBudget }) };
+    return { ok: true, result: runConfig(config, { stateBudget, points }) };
   } catch (err) {
     if (
       err instanceof ConfigError ||
@@ -36,58 +36,7 @@ export function validationError(config) {
   }
 }
 
-// Render charts into the output area (svg elements for E[lost] and P(any loss)).
-export function renderOutputCharts({
-  svgLost,
-  svgP,
-  result,
-  _mode = 1,
-  xLabel,
-}) {
-  const xl =
-    xLabel || `${result.times[result.times.length - 1] / HOURS_PER_YEAR} y`;
-  renderChart(svgLost, {
-    width: 300,
-    height: 110,
-    series: [
-      {
-        label: "rigorous",
-        x: result.times,
-        y: evaluateSeries(result, { mode: 1, bytes: true }).y,
-        color: "var(--accent)",
-        dashed: false,
-      },
-      {
-        label: "partial",
-        x: result.times,
-        y: evaluateSeries(result, { mode: 2, bytes: true }).y,
-        color: "var(--accent2)",
-        dashed: true,
-      },
-    ],
-    xLabel: xl,
-    yLabel: "E[lost] TB",
-    logY: true,
-  });
-  renderChart(svgP, {
-    width: 300,
-    height: 110,
-    series: [
-      {
-        label: "P(any loss)",
-        x: result.times,
-        y: result.anyLossProb,
-        color: "var(--accent2)",
-        dashed: false,
-      },
-    ],
-    xLabel: xl,
-    yLabel: "P(any loss)",
-    logY: false,
-  });
-}
-
-// Summary metrics (sidebar + output node).
+// Summary metrics (root ribbon, drawer, sidebar).
 export function summarize(result) {
   const last = result.times.length - 1;
   return {

@@ -1,26 +1,38 @@
-// Wiring: store + canvas + props + results + header/sidebar + optimizer modal.
+// Wiring: store + canvas + props + results drawer + sidebar + palette + keyboard.
+//
+// State lives in the config (single source of truth, ui.md §9): config.ui carries view state
+// (pos / view / collapsed) and is ignored by the solver. View changes are saved without an undo
+// entry and debounced; structural edits are undoable.
 
 import { createStore, downloadConfig, readConfigFile } from "./app.js";
 import {
   renderCanvas,
-  OUTPUT_ID,
-  walkPools,
-  treeViewModel,
+  renderPreviewBlock,
+  resolvePath,
+  isPoolNode,
+  parentPathOf,
   connectDiskToPool,
-  connectPoolToPool,
-  connectPoolToOutput,
   addPool,
+  moveMember,
+  removeNode,
+  removeKind,
+  setMemberCount,
+  setRoot,
+  setRootPlan,
+  kindUsage,
 } from "./canvas.js";
-import { renderProps } from "./props.js";
+import { rekeyPositions } from "./positions.js";
+import { renderProps, SCENARIO_ID } from "./props.js";
 import {
   safeEvaluate,
   validationError,
-  renderOutputCharts,
   summarize,
   fmtSummary,
   previewConfig,
 } from "./results.js";
-import { validate, ConfigError } from "../core/config.js";
+import { renderChart, evaluateSeries, fmtBytes } from "./charts.js";
+import { openPalette, openShortcuts, askConfirm } from "./commands.js";
+import { validate, TB } from "../core/config.js";
 
 const SAMPLE_CONFIG = {
   schemaVersion: 1,
@@ -76,90 +88,115 @@ const SAMPLE_CONFIG = {
     avgFileMB: 8,
     horizonY: 5,
   },
+  ui: { pos: {}, collapsed: {}, view: { x: 60, y: 24, zoom: 1 } },
 };
+
+const CHEAP = { points: 9, stateBudget: 20000 };
+const PALETTE_COLORS = [
+  "var(--accent)",
+  "var(--accent2)",
+  "var(--warn)",
+  "var(--bad)",
+  "#c79bff",
+];
 
 export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   const store = createStore(initialConfig);
   let selection = "tree";
+  let selWire = null;
   let lastResult = null;
   let lastError = null;
+  let drawerOpen = false;
+  let overlays = [];
+  const heights = new Map();
+  const cardResults = new Map(); // path -> { fmt, series } | { error }
+  const cheapCache = new Map();
+  let previewTimer = null;
+  let viewSaveTimer = null;
 
-  // header
+  // ---- shell ------------------------------------------------------------------
+
   const header = document.createElement("header");
-  header.innerHTML = `<h1>◉ raid_calc</h1>`;
-  const runBtn = btn("▶ Run", "primary");
-  const optimizeBtn = btn("✦ Auto-optimize", "magic");
-  const importBtn = btn("Import", "ghost");
-  const exportBtn = btn("Export", "ghost");
+  header.innerHTML = "<h1>◉ raid_calc</h1>";
   const undoBtn = btn("↶", "ghost");
   const redoBtn = btn("↷", "ghost");
   const resetBtn = btn("Reset example", "ghost");
+  const importBtn = btn("Import", "ghost");
+  const exportBtn = btn("Export", "ghost");
+  const scenarioChip = btn("", "chip-btn");
+  scenarioChip.title = "workload + global timings (selects the Scenario panel)";
+  const helpBtn = btn("?", "ghost");
+  helpBtn.title = "keyboard & gestures";
+  const drawerBtn = btn("Results", "ghost");
+  const runBtn = btn("▶ Run", "primary");
+  const optimizeBtn = btn("✦ Auto-optimize", "magic");
   const spacer = document.createElement("div");
   spacer.className = "spacer";
-  header.appendChild(undoBtn);
-  header.appendChild(redoBtn);
-  header.appendChild(resetBtn);
-  header.appendChild(importBtn);
-  header.appendChild(exportBtn);
-  header.appendChild(runBtn);
-  header.appendChild(optimizeBtn);
+  for (const b of [
+    undoBtn,
+    redoBtn,
+    resetBtn,
+    importBtn,
+    exportBtn,
+    spacer,
+    scenarioChip,
+    helpBtn,
+    drawerBtn,
+    runBtn,
+    optimizeBtn,
+  ])
+    header.appendChild(b);
 
-  // left sidebar
   const side = document.createElement("nav");
   side.className = "side";
-  const inventory = document.createElement("div");
-  inventory.className = "inventory";
-  side.appendChild(el("h3", "Nodes"));
-  const palDisk = palItem("Disk model", "var(--warn)");
-  const palPool = palItem("Pool", "var(--accent)");
-  palDisk.addEventListener("click", () => addKind());
-  palPool.addEventListener("click", () => addPoolNode());
-  side.appendChild(palDisk);
-  side.appendChild(palPool);
-  side.appendChild(el("h3", "Inventory"));
-  side.appendChild(inventory);
-  const resultSummary = document.createElement("div");
-  resultSummary.className = "inventory";
-  side.appendChild(el("h3", "Top-level result"));
-  side.appendChild(resultSummary);
 
-  // canvas
   const canvas = document.createElement("main");
   canvas.className = "canvas";
 
-  // props
   const props = document.createElement("aside");
   props.className = "props";
 
-  rootEl.appendChild(header);
-  rootEl.appendChild(side);
-  rootEl.appendChild(canvas);
-  rootEl.appendChild(props);
+  const drawer = document.createElement("div");
+  drawer.className = "drawer";
+  drawer.hidden = true;
 
-  // ---- store wiring ----------------------------------------------------------
+  rootEl.append(header, side, canvas, props, drawer);
 
-  // Structural edits and field edits are ALWAYS committed (the canvas must reflect what the
-  // user did); an invalid config is flagged via the disabled Run button + tooltip instead of
-  // silently rejected — transient invalid states are part of editing (ui.md).
-  const commit = (mutator) => {
+  // ---- config helpers ---------------------------------------------------------
+
+  const commit = (mutator, label) => {
     try {
-      const next = mutator(store.get());
+      const before = store.get();
+      const next = mutator(before);
+      if (!next) return false;
       let msg = "";
       try {
         validate(next);
       } catch (err) {
         msg = err.message;
       }
-      store.set(() => next);
+      const after = rekeyPositions(before, next, (before.ui || {}).pos || {});
+      const withUi = { ...next, ui: { ...(next.ui || before.ui || {}), pos: after } };
+      store.set(() => withUi);
       setRunError(msg);
+      void label;
       return true;
     } catch (err) {
       setRunError(err.message);
+      toast(err.message, "bad");
       return false;
     }
   };
 
-  // ---- run -------------------------------------------------------------------
+  const uiOf = () => store.get().ui || {};
+
+  const commitUi = (mutator, { recordHistory = false, render = true } = {}) => {
+    const nextUi = mutator(store.get().ui || {});
+    store.set((cfg) => ({ ...cfg, ui: nextUi }), { recordHistory });
+    if (render) renderAll();
+  };
+
+  // ---- run --------------------------------------------------------------------
 
   const setRunError = (msg) => {
     lastError = msg;
@@ -172,250 +209,717 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     const err = validationError(cfg);
     if (err) {
       setRunError(err);
-      return;
+      toast(err, "bad");
+      return false;
     }
     const { ok, result, error } = safeEvaluate(cfg);
     if (!ok) {
       setRunError(error);
-      return;
+      toast(error, "bad");
+      return false;
     }
     lastResult = result;
-    lastError = null;
     setRunError(null);
-    render();
+    cardResults.set("tree", cardResult(result));
+    renderAll();
+    return true;
   };
 
-  runBtn.addEventListener("click", run);
+  const cardResult = (result) => {
+    const s = summarize(result);
+    return {
+      fmt: fmtSummary(s),
+      series: result.expectedLostBytes,
+      raw: s,
+    };
+  };
 
-  // ---- render ----------------------------------------------------------------
+  // ---- cheap evaluation for previews and drop deltas --------------------------
 
-  const render = () => {
+  const cheapSummary = (cfg) => {
+    const { ok, result } = safeEvaluate(cfg, CHEAP);
+    return ok ? summarize(result) : null;
+  };
+
+  const onPreviewDrop = (childPath, targetPath) => {
+    const baseKey = "base";
+    if (!cheapCache.has(baseKey)) cheapCache.set(baseKey, cheapSummary(store.get()));
+    const key = `${childPath}>${targetPath}`;
+    if (cheapCache.has(key)) return cheapCache.get(key);
+    let delta = { ok: false };
+    try {
+      const cand = moveMember(store.get(), childPath, targetPath, null);
+      const cs = cheapSummary(cand);
+      const bs = cheapCache.get(baseKey);
+      if (bs && cs) delta = { ok: true, rows: deltaRows(bs, cs) };
+    } catch {
+      delta = { ok: false };
+    }
+    cheapCache.set(key, delta);
+    return delta;
+  };
+
+  const deltaRows = (b, c) => [
+    {
+      label: "P(any loss)",
+      from: `${(b.anyLoss * 100).toFixed(2)}%`,
+      to: `${(c.anyLoss * 100).toFixed(2)}%`,
+      dir: dir(c.anyLoss, b.anyLoss, true),
+    },
+    {
+      label: "E[lost]",
+      from: shortBytes(b.lostBytes),
+      to: shortBytes(c.lostBytes),
+      dir: dir(c.lostBytes, b.lostBytes, true),
+    },
+    {
+      label: "rebuild",
+      from: `×${b.rebuildSlowdown.toFixed(2)}`,
+      to: `×${c.rebuildSlowdown.toFixed(2)}`,
+      dir: dir(c.rebuildSlowdown, b.rebuildSlowdown, true),
+    },
+    {
+      label: "usable",
+      from: `${(b.usableBytes / TB).toFixed(0)} TB`,
+      to: `${(c.usableBytes / TB).toFixed(0)} TB`,
+      dir: dir(c.usableBytes, b.usableBytes, false),
+    },
+  ];
+
+  const dir = (to, from, lowerIsBetter) => {
+    if (Math.abs(to - from) < 1e-12) return "";
+    const better = lowerIsBetter ? to < from : to > from;
+    return better ? "good" : "bad";
+  };
+
+  const shortBytes = (v) => fmtBytes(v);
+
+  // ---- render -----------------------------------------------------------------
+
+  const renderAll = () => {
+    cheapCache.clear();
     const cfg = store.get();
-    const err = validationError(cfg);
-    setRunError(err);
+    setRunError(validationError(cfg));
     renderCanvas({
       container: canvas,
       config: cfg,
       selection,
-      onSelect: (id) => {
-        selection = id;
-        render();
+      selWire,
+      ui: cfg.ui || {},
+      results: cardResults,
+      heights,
+      actions: {
+        onSelect: (id) => {
+          const previous = selection;
+          selection = id;
+          selWire = null;
+          if (previous && previous !== "tree") cardResults.delete(previous);
+          renderAll();
+        },
+        onWireClick: (childId) => {
+          selWire = childId;
+          selection = null;
+          renderAll();
+        },
+        onCutLink: (childId) => {
+          selWire = null;
+          commit((c) => removeNode(c, childId), "cut link");
+          renderAll();
+        },
+        onReparent: (nodePath, targetPath, slot) => {
+          commit((c) => moveMember(c, nodePath, targetPath, slot), "re-parent");
+          renderAll();
+        },
+        onMovePositions: (patch) =>
+          commitUi((ui) => ({ ...ui, pos: { ...(ui.pos || {}), ...patch } }), {
+            recordHistory: true,
+          }),
+        onView: (view) => {
+          clearTimeout(viewSaveTimer);
+          viewSaveTimer = setTimeout(
+            () => commitUi((ui) => ({ ...ui, view }), { render: false }),
+            350,
+          );
+        },
+        onTidy: () => commitUi((ui) => ({ ...ui, pos: {} }), { recordHistory: true }),
+        onToggleCollapse: (path) =>
+          commitUi(
+            (ui) => ({
+              ...ui,
+              collapsed: { ...(ui.collapsed || {}), [path]: !(ui.collapsed || {})[path] },
+            }),
+            { recordHistory: true },
+          ),
+        onSetMemberCount: (path, slot, count) => {
+          commit((c) => setMemberCount(c, path, slot, count), "member count");
+          renderAll();
+        },
+        onRemoveMember: (path, slot) => {
+          commit((c) => {
+            const pool = resolvePath(c, path);
+            const members = pool.members.slice();
+            members.splice(slot, 1);
+            return { ...c, tree: replaceMembers(c.tree, path, members) };
+          }, "remove member");
+          renderAll();
+        },
+        onQuickAddMember: (path) => {
+          const kid = Object.keys(store.get().kinds)[0];
+          commit((c) => (kid ? connectDiskToPool(c, kid, path) : addPool(c, { parentPath: path })), "add member");
+          renderAll();
+        },
+        onQuickAdd: (nodePath, point) => openQuickAdd(nodePath, point),
+        onPreviewDrop,
+        onRejectDrop: (id, reason) => {
+          toast(reason || "that drop is not allowed", "bad");
+          const c = canvas.querySelector(".node.dragging");
+          if (c) c.classList.remove("dragging");
+          renderAll();
+        },
+        onOpenResults: () => toggleDrawer(true),
+        onInlineEdit: (id, key, value) => {
+          commit((c) => {
+            const node = resolvePath(c, id);
+            return { ...c, tree: replaceNode(c.tree, id, { ...node, [key]: value }) };
+          }, "inline edit");
+          renderAll();
+        },
+        onContextMenu: (e, id) => openContextMenu(e, id),
       },
-      onConnect: (from, to) => handleConnect(from, to),
-      onLayoutRequest: () => render(),
     });
-    if (lastResult) fillOutputCharts(canvas, lastResult);
     renderProps(props, {
       config: cfg,
       selection,
       onSet: commit,
-      onSelect: (id) => {
-        selection = id;
-        render();
-      },
+      onPromote: (path) => promote(path),
+      onDelete: (path) => deleteSelection(path),
+      previewNote:
+        selection && selection !== "tree" && isPoolPath(cfg, selection)
+          ? "Standalone preview shown on the card."
+          : null,
     });
-    renderInventory(cfg);
-    renderResult(cfg);
+    renderSidebar(cfg);
+    renderDrawer();
     schedulePreview();
   };
 
-  // ---- connect ---------------------------------------------------------------
+  const isPoolPath = (cfg, path) => isPoolNode(resolvePath(cfg, path));
 
-  const handleConnect = (from, to) => {
-    const fPath = from.path;
-    const tPath = to.path;
-    try {
-      if (from.type === "disk" && to.type === "pool") {
-        // disk output -> pool member input
-        const kindId = fPath.slice(6);
-        return commit((cfg) => connectDiskToPool(cfg, kindId, tPath));
+  // ---- tree surgery helpers ---------------------------------------------------
+
+  function replaceNode(tree, path, value) {
+    if (path === "tree") return value;
+    const parts = path.split(".").slice(1);
+    const setIn = (node, idx) => {
+      const part = parts[idx];
+      const m = /^members\[(\d+)\]$/.exec(part);
+      if (m) {
+        const members = node.members.slice();
+        members[Number(m[1])] = setIn(members[Number(m[1])], idx + 1);
+        return { ...node, members };
       }
-      if (from.type === "pool" && to.type === "pool") {
-        return commit((cfg) => connectPoolToPool(cfg, fPath, tPath));
-      }
-      if (from.type === "pool" && to.type === "output") {
-        return commit((cfg) => connectPoolToOutput(cfg, fPath));
-      }
-      setRunError("invalid connection");
-      return false;
-    } catch (e) {
-      setRunError(e instanceof Error ? e.message : String(e));
-      return false;
-    }
-  };
+      throw new Error(`unsupported path segment ${part}`);
+    };
+    return setIn(tree, 0);
+  }
 
-  // ---- output node charts ----------------------------------------------------
+  function replaceMembers(tree, path, members) {
+    if (path === "tree") return { ...tree, members };
+    const parts = path.split(".").slice(1);
+    const setIn = (node, idx) => {
+      const part = parts[idx];
+      const m = /^members\[(\d+)\]$/.exec(part);
+      if (!m) throw new Error(`unsupported path segment ${part}`);
+      const membersArr = node.members.slice();
+      const i = Number(m[1]);
+      membersArr[i] =
+        idx === parts.length - 1
+          ? { ...membersArr[i], members }
+          : setIn(membersArr[i], idx + 1);
+      return { ...node, members: membersArr };
+    };
+    return setIn(tree, 1);
+  }
 
-  const fillOutputCharts = (canvasEl, result) => {
-    const host = canvasEl.querySelector(".node.out-node .bd[data-chart-host]");
-    if (!host) return;
-    host.querySelectorAll(".out-charts").forEach((n) => n.remove());
-    const wrap = el("div", "");
-    wrap.className = "out-charts";
-    const svgLost = document.createElementNS(
-      "http://www.w3.org/2000/svg",
-      "svg",
-    );
-    svgLost.setAttribute("width", "180");
-    svgLost.setAttribute("height", "64");
-    const svgP = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svgP.setAttribute("width", "180");
-    svgP.setAttribute("height", "64");
-    wrap.appendChild(svgLost);
-    wrap.appendChild(svgP);
-    host.appendChild(wrap);
-    renderOutputCharts({
-      svgLost,
-      svgP,
-      result,
-      xLabel: `${result.times[result.times.length - 1] / 8760} y`,
-    });
-  };
+  // ---- actions ----------------------------------------------------------------
 
-  // ---- inventory + add nodes -------------------------------------------------
-
-  const addKind = () => {
-    const id = `hdd${Object.keys(store.get().kinds).length + 1}`;
-    commit((cfg) => ({
-      ...cfg,
-      kinds: {
-        ...cfg.kinds,
-        [id]: {
-          capacityTB: 8,
-          lambdaBase: 2.8e-6,
-          lambdaRead: 0,
-          lambdaWrite: 0,
-          ure: 7.9e-15,
-          readBW: 190e6,
-          writeBW: 170e6,
-          count: 4,
-          spares: 0,
-        },
-      },
-    }));
-    selection = `kinds.${id}`;
-    render();
-  };
-
-  const addPoolNode = () => {
-    const kid = Object.keys(store.get().kinds)[0];
-    commit((cfg) => {
-      let next = addPool(cfg, { parentPath: "tree", strategy: "concat" });
-      if (kid) {
-        const lastIndex = next.tree.members.length - 1;
-        next = connectDiskToPool(next, kid, `tree.members[${lastIndex}]`);
-      }
-      return next;
-    });
-    render();
-  };
-
-  const renderInventory = (cfg) => {
-    inventory.innerHTML = "";
-    for (const [id, kind] of Object.entries(cfg.kinds)) {
-      const row = el("div", "");
-      row.className = "inv";
-      const r1 = el("div", "");
-      r1.className = "row";
-      r1.appendChild(el("span", `${id} ${kind.capacityTB}TB`));
-      const num1 = el("span", `×${kind.count}`);
-      num1.className = "num";
-      r1.appendChild(num1);
-      row.appendChild(r1);
-      const sparesRow = el("div", "");
-      sparesRow.className = "row sub";
-      sparesRow.appendChild(el("span", "hot spares (auto)"));
-      const num2 = el("span", String(kind.spares));
-      num2.className = "num";
-      sparesRow.appendChild(num2);
-      row.appendChild(sparesRow);
-      row.addEventListener("click", () => {
-        selection = `kinds.${id}`;
-        render();
+  const promote = async (path) => {
+    const cfg = store.get();
+    const plan = setRootPlan(cfg, path);
+    if (plan.kind === "noop") return;
+    let wrap = false;
+    if (plan.kind === "wrap") {
+      const ok = await askConfirm({
+        host: rootEl,
+        title: "Keep the rest of the tree?",
+        body:
+          `Promoting this pool would leave ${plan.others} other node(s) outside the new root. ` +
+          `Keep them by nesting the old root under the promoted pool (nothing is discarded), or cancel.`,
+        okLabel: "Promote & keep",
       });
-      inventory.appendChild(row);
+      if (!ok) return;
+      wrap = true;
     }
+    if (commit((c) => setRoot(c, path, { wrap }), "promote"))
+      selection = "tree";
+    renderAll();
   };
 
-  const renderResult = (cfg) => {
-    if (!lastResult) return;
-    const s = fmtSummary(summarize(lastResult));
-    resultSummary.innerHTML = "";
-    for (const [k, v] of Object.entries(s)) {
-      const row = el("div", "");
-      row.className = "row";
-      const kEl = el(
-        "span",
-        k.replace(/[A-Z]/g, (c) => " " + c.toLowerCase()),
+  const deleteSelection = (path) => {
+    if (!path || path === SCENARIO_ID) return;
+    if (path.startsWith("kinds.")) {
+      const id = path.slice(6);
+      commit((c) => removeKind(c, id), "delete disk model");
+      if (selection === path) selection = "tree";
+      renderAll();
+      return;
+    }
+    if (path === "tree") {
+      toast("the root cannot be deleted — promote another pool first", "bad");
+      return;
+    }
+    commit((c) => removeNode(c, path), "delete pool");
+    if (selection === path) selection = "tree";
+    renderAll();
+  };
+
+  const openQuickAdd = (nodePath, point) => {
+    const menu = menuAt(point, canvas);
+    menu.appendChild(
+      menuItem("New concat pool containing this", () => {
+        commit((c) => {
+          const parent = parentPathOf(nodePath);
+          const slot = Number(/members\[(\d+)\]$/.exec(nodePath)[1]);
+          let next = moveMember(c, nodePath, parent, slot + 1);
+          next = addPool(next, { strategy: "concat", parentPath: parent, slotIndex: slot + 1 });
+          return next;
+        }, "wrap in pool");
+        renderAll();
+      }),
+    );
+    menu.appendChild(
+      menuItem("Cut the link (delete this node)", () => {
+        commit((c) => removeNode(c, nodePath), "delete");
+        renderAll();
+      }),
+    );
+    menu.appendChild(menuItem("Cancel", () => {}));
+  };
+
+  const openContextMenu = (e, id) => {
+    const cfg = store.get();
+    const isRoot = id === "tree";
+    const menu = menuAt({ x: e.clientX, y: e.clientY }, document.body, true);
+    if (!isRoot)
+      menu.appendChild(
+        menuItem("Set as top-level", () => promote(id)),
       );
-      kEl.textContent = k;
-      row.appendChild(kEl);
-      const vEl = el("b", v);
-      vEl.style.color =
-        k === "lost" || k === "slowdown" ? "var(--warn)" : "var(--accent2)";
-      row.appendChild(vEl);
-      resultSummary.appendChild(row);
-    }
-    void cfg;
+    menu.appendChild(
+      menuItem(
+        (uiOf().collapsed || {})[id] ? "Expand" : "Collapse",
+        () =>
+          commitUi(
+            (ui) => ({
+              ...ui,
+              collapsed: { ...(ui.collapsed || {}), [id]: !(ui.collapsed || {})[id] },
+            }),
+            { recordHistory: true },
+          ),
+      ),
+    );
+    menu.appendChild(
+      menuItem("Add member pool", () => {
+        commit((c) => addPool(c, { strategy: "concat", parentPath: id }), "add member pool");
+        renderAll();
+      }),
+    );
+    menu.appendChild(
+      menuItem("Copy config JSON", () => {
+        const json = JSON.stringify(cfg, null, 2);
+        if (navigator.clipboard) navigator.clipboard.writeText(json);
+        toast("config JSON copied", "ok");
+      }),
+    );
+    if (!isRoot)
+      menu.appendChild(menuItem("Delete pool", () => deleteSelection(id), "danger"));
   };
 
-  // ---- preview ---------------------------------------------------------------
+  // ---- sidebar ----------------------------------------------------------------
 
-  let previewTimer = null;
-  const schedulePreview = () => {
-    if (previewTimer) clearTimeout(previewTimer);
-    previewTimer = setTimeout(() => {
-      if (
-        !selection ||
-        selection === OUTPUT_ID ||
-        selection === "tree" ||
-        selection.startsWith("kinds.")
-      )
-        return;
-      const cfg = store.get();
-      const pcfg = previewConfig(cfg, selection);
-      const { ok, result } = safeEvaluate(pcfg, { stateBudget: 20000 });
-      const box = props.querySelector(".preview");
-      if (!box) return;
-      if (!ok) {
-        const note = el(
-          "div",
-          `preview unavailable: ${lastError ?? "invalid"}`,
-        );
-        note.className = "note";
-        box.textContent = "";
-        box.appendChild(note);
-        return;
-      }
-      const s = fmtSummary(summarize(result));
-      const metrics = el("div", "");
-      metrics.className = "mini-metrics";
-      for (const [v, k] of [
-        [s.lost, "E[lost]"],
-        [s.anyLossPct, "P(any loss)"],
-        [s.slowdown, "slowdown"],
-        [s.usable, "usable"],
+  const renderSidebar = (cfg) => {
+    side.innerHTML = "";
+
+    side.appendChild(el("h3", "Build"));
+    const palPool = palItem("Pool", "var(--accent)");
+    palPool.addEventListener("click", () => {
+      const target = isPoolPath(cfg, selection) ? selection : "tree";
+      commit((c) => addPool(c, { strategy: "concat", parentPath: target }), "add pool");
+      renderAll();
+    });
+    const palDisk = palItem("Disk model", "var(--warn)");
+    palDisk.addEventListener("click", addKind);
+    side.appendChild(palPool);
+    side.appendChild(palDisk);
+
+    side.appendChild(el("h3", "Disk library (drag onto a pool)"));
+    const lib = el("div");
+    lib.className = "library";
+    for (const [id, kind] of Object.entries(cfg.kinds)) {
+      const row = el("div");
+      row.className = "lib-row" + (selection === `kinds.${id}` ? " sel" : "");
+      const dot = el("span");
+      dot.className = "dot";
+      dot.style.background = "var(--warn)";
+      row.appendChild(dot);
+      const nm = el("div");
+      nm.className = "lib-name";
+      nm.appendChild(el("span", id));
+      nm.appendChild(el("span", `${kind.capacityTB} TB`)).className = "lib-cap";
+      row.appendChild(nm);
+      const used = kindUsage(cfg, id);
+      const meta = el(
+        "div",
+        `${used}/${kind.count} used · ${kind.spares} spare`,
+      );
+      meta.className = "lib-meta";
+      row.appendChild(meta);
+      row.addEventListener("pointerdown", (e) => startLibraryDrag(e, id));
+      row.addEventListener("click", () => {
+        if (suppressLibClick) {
+          suppressLibClick = false;
+          return;
+        }
+        selection = `kinds.${id}`;
+        renderAll();
+      });
+      lib.appendChild(row);
+    }
+    side.appendChild(lib);
+
+    side.appendChild(el("h3", "Inventory"));
+    const inv = el("div");
+    inv.className = "inventory";
+    let total = 0;
+    let used = 0;
+    let spares = 0;
+    for (const [id, kind] of Object.entries(cfg.kinds)) {
+      total += kind.count;
+      used += kindUsage(cfg, id);
+      spares += kind.spares;
+      void id;
+    }
+    for (const [k, v] of [
+      ["disks", String(total)],
+      ["referenced", String(used)],
+      ["hot spares", String(spares)],
+      ["free", String(Math.max(0, total - used - spares))],
+    ]) {
+      const row = el("div");
+      row.className = "row";
+      row.appendChild(el("span", k));
+      row.appendChild(el("b", v));
+      inv.appendChild(row);
+    }
+    side.appendChild(inv);
+
+    side.appendChild(el("h3", "Results"));
+    const rs = el("div");
+    rs.className = "inventory";
+    if (lastResult) {
+      const s = fmtSummary(summarize(lastResult));
+      for (const [k, v] of [
+        ["E[lost] @T", s.lost],
+        ["P(any loss)", s.anyLossPct],
+        ["usable", s.usable],
+        ["slowdown", s.slowdown],
       ]) {
-        const mm = el("div", "");
-        mm.className = "mm";
-        const vv = el("div", v);
-        vv.className = "v";
-        const kk = el("div", k);
-        kk.className = "k";
-        mm.appendChild(vv);
-        mm.appendChild(kk);
-        metrics.appendChild(mm);
+        const row = el("div");
+        row.className = "row";
+        row.appendChild(el("span", k));
+        row.appendChild(el("b", v));
+        rs.appendChild(row);
       }
-      box.textContent = "";
-      box.appendChild(metrics);
+      const open = el("button", "Open charts");
+      open.className = "ghost tiny";
+      open.addEventListener("click", () => toggleDrawer(true));
+      rs.appendChild(open);
+    } else {
+      rs.appendChild(el("div", "press Run (R)"));
+    }
+    side.appendChild(rs);
+
+    const foot = el("div", "Ctrl+K commands · ? shortcuts");
+    foot.className = "side-foot";
+    side.appendChild(foot);
+  };
+
+  // ---- library drag -----------------------------------------------------------
+
+  let libDrag = null;
+  let suppressLibClick = false;
+  const startLibraryDrag = (e, kindId) => {
+    if (e.button !== 0) return;
+    libDrag = { kindId, moved: false, start: { x: e.clientX, y: e.clientY } };
+    const ghost = el("div", `+ ${kindId}`);
+    ghost.className = "lib-ghost";
+    ghost.style.display = "none";
+    document.body.appendChild(ghost);
+    const move = (ev) => {
+      if (!libDrag) return;
+      if (!libDrag.moved && Math.hypot(ev.clientX - libDrag.start.x, ev.clientY - libDrag.start.y) < 5)
+        return;
+      libDrag.moved = true;
+      ghost.style.display = "";
+      ghost.style.left = `${ev.clientX + 14}px`;
+      ghost.style.top = `${ev.clientY + 12}px`;
+      for (const n of canvas.querySelectorAll(".node")) n.classList.remove("drop-ok");
+      const card = cardAt(ev.clientX, ev.clientY);
+      if (card) card.classList.add("drop-ok");
+    };
+    const up = (ev) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      ghost.remove();
+      const card = libDrag && libDrag.moved ? cardAt(ev.clientX, ev.clientY) : null;
+      const moved = libDrag && libDrag.moved;
+      libDrag = null;
+      suppressLibClick = !!moved;
+      for (const n of canvas.querySelectorAll(".node")) n.classList.remove("drop-ok");
+      if (card && moved) {
+        commit((c) => connectDiskToPool(c, kindId, card.dataset.id), "add disk member");
+        renderAll();
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  const cardAt = (clientX, clientY) => {
+    const node = document.elementFromPoint(clientX, clientY);
+    return node ? node.closest(".node") : null;
+  };
+
+  // ---- results drawer ---------------------------------------------------------
+
+  const toggleDrawer = (open) => {
+    drawerOpen = open === undefined ? !drawerOpen : open;
+    renderDrawer();
+  };
+
+  const renderDrawer = () => {
+    drawer.hidden = !drawerOpen;
+    if (!drawerOpen) return;
+    drawer.innerHTML = "";
+    const head = el("div");
+    head.className = "drawer-head";
+    head.appendChild(el("h2", "Results"));
+    const spacer2 = el("div");
+    spacer2.className = "spacer";
+    head.appendChild(spacer2);
+    if (lastResult) {
+      const pin = el("button", "Pin current");
+      pin.className = "ghost tiny";
+      pin.title = "keep this curve as a comparison overlay";
+      pin.addEventListener("click", () => {
+        overlays.push({
+          label: `run ${overlays.length + 1}`,
+          result: lastResult,
+          color: PALETTE_COLORS[(overlays.length + 1) % PALETTE_COLORS.length],
+        });
+        renderDrawer();
+      });
+      head.appendChild(pin);
+    }
+    if (overlays.length) {
+      const clear = el("button", "Clear pins");
+      clear.className = "ghost tiny";
+      clear.addEventListener("click", () => {
+        overlays = [];
+        renderDrawer();
+      });
+      head.appendChild(clear);
+    }
+    const close = el("button", "✕");
+    close.className = "ghost tiny";
+    close.addEventListener("click", () => toggleDrawer(false));
+    head.appendChild(close);
+    drawer.appendChild(head);
+
+    if (!lastResult) {
+      const n = el("div", "Run the evaluation to see curves here.");
+      n.className = "note";
+      drawer.appendChild(n);
+      return;
+    }
+    const grid = el("div");
+    grid.className = "drawer-grid";
+    const mk = (label, logY, seriesFn) => {
+      const wrap = el("div");
+      wrap.className = "drawer-chart";
+      wrap.appendChild(el("div", label)).className = "dc-title";
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      renderChart(svg, {
+        width: 420,
+        height: 168,
+        series: seriesFn(lastResult, "var(--accent2)", "run"),
+        xLabel: `${lastResult.times[lastResult.times.length - 1] / 8760} y`,
+        yLabel: label,
+        logY,
+      });
+      wrap.appendChild(svg);
+      return wrap;
+    };
+    grid.appendChild(
+      mk("E[lost](t)", true, (result, color, tag) => {
+        const out = [
+          {
+            label: `${tag} rigorous`,
+            x: result.times,
+            y: evaluateSeries(result, { mode: 1, bytes: true }).y,
+            color,
+          },
+          {
+            label: `${tag} partial`,
+            x: result.times,
+            y: evaluateSeries(result, { mode: 2, bytes: true }).y,
+            color: "var(--warn)",
+            dashed: true,
+          },
+        ];
+        overlays.forEach((o) =>
+          out.push({
+            label: `${o.label} rigorous`,
+            x: o.result.times,
+            y: evaluateSeries(o.result, { mode: 1, bytes: true }).y,
+            color: o.color,
+            dashed: true,
+          }),
+        );
+        return out;
+      }),
+    );
+    grid.appendChild(
+      mk("P(any loss)(t)", false, (result, color, tag) => {
+        const out = [
+          { label: `${tag} P`, x: result.times, y: result.anyLossProb, color },
+        ];
+        overlays.forEach((o) =>
+          out.push({
+            label: o.label,
+            x: o.result.times,
+            y: o.result.anyLossProb,
+            color: o.color,
+            dashed: true,
+          }),
+        );
+        return out;
+      }),
+    );
+    const s = fmtSummary(summarize(lastResult));
+    const metrics = el("div");
+    metrics.className = "drawer-metrics";
+    for (const [k, v] of Object.entries(s)) {
+      const row = el("div");
+      row.className = "row";
+      row.appendChild(el("span", k));
+      row.appendChild(el("b", v));
+      metrics.appendChild(row);
+    }
+    grid.appendChild(metrics);
+    drawer.appendChild(grid);
+  };
+
+  // ---- previews ---------------------------------------------------------------
+
+  const schedulePreview = () => {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => {
+      if (!selection || selection === "tree" || selection === SCENARIO_ID) return;
+      const cfg = store.get();
+      const path = selection;
+      const pcfg = previewConfig(cfg, path);
+      const { ok, result } = safeEvaluate(pcfg, { stateBudget: 20000, points: 25 });
+      const box = [...canvas.querySelectorAll(".node")].find(
+        (n) => n.dataset.id === path,
+      );
+      const block = box && box.querySelector(".nodepreview");
+      if (!block) return;
+      if (!ok) {
+        renderPreviewBlock(block, { error: lastError || "unsupported subtree" });
+        return;
+      }
+      const p = cardResult(result);
+      renderPreviewBlock(block, p);
     }, 300);
   };
 
-  // ---- persistence -----------------------------------------------------------
+  // ---- toasts + menus ---------------------------------------------------------
 
-  exportBtn.addEventListener("click", () => {
-    downloadConfig(store.get());
+  let toastBox = null;
+  const toast = (msg, kind = "") => {
+    if (!toastBox) {
+      toastBox = el("div");
+      toastBox.className = "toasts";
+      rootEl.appendChild(toastBox);
+    }
+    const t = el("div", msg);
+    t.className = `toast ${kind}`;
+    toastBox.appendChild(t);
+    setTimeout(() => t.remove(), 4200);
+  };
+
+  const menuAt = (point, host, fixed = false) => {
+    const menu = el("div");
+    menu.className = "menu";
+    menu.style.position = fixed ? "fixed" : "absolute";
+    const h = host.getBoundingClientRect();
+    menu.style.left = `${fixed ? point.x : point.x - h.left}px`;
+    menu.style.top = `${fixed ? point.y : point.y - h.top}px`;
+    host.appendChild(menu);
+    const close = (ev) => {
+      if (menu.contains(ev.target)) return;
+      menu.remove();
+      window.removeEventListener("pointerdown", close);
+    };
+    setTimeout(() => window.addEventListener("pointerdown", close), 0);
+    return menu;
+  };
+
+  const menuItem = (label, fn, cls = "") => {
+    const b = el("button", label);
+    b.className = `menu-item ${cls}`.trim();
+    b.addEventListener("click", () => {
+      b.closest(".menu").remove();
+      fn();
+    });
+    return b;
+  };
+
+  // ---- header wiring ----------------------------------------------------------
+
+  runBtn.addEventListener("click", run);
+  drawerBtn.addEventListener("click", () => toggleDrawer());
+  helpBtn.addEventListener("click", () => openShortcuts({ host: rootEl }));
+  scenarioChip.addEventListener("click", () => {
+    selection = SCENARIO_ID;
+    renderAll();
   });
+  undoBtn.addEventListener("click", () => {
+    if (store.undo()) renderAll();
+  });
+  redoBtn.addEventListener("click", () => {
+    if (store.redo()) renderAll();
+  });
+  resetBtn.addEventListener("click", () => {
+    store.reset(structuredClone(SAMPLE_CONFIG));
+    selection = "tree";
+    selWire = null;
+    lastResult = null;
+    overlays = [];
+    cardResults.clear();
+    renderAll();
+  });
+  exportBtn.addEventListener("click", () => downloadConfig(store.get()));
   importBtn.addEventListener("click", () => {
     const input = document.createElement("input");
     input.type = "file";
@@ -427,28 +931,140 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
         const cfg = await readConfigFile(file);
         validate(cfg);
         store.reset(cfg);
-        render();
+        selection = "tree";
+        renderAll();
       } catch (e) {
         setRunError(e instanceof Error ? e.message : String(e));
+        toast(String(e.message || e), "bad");
       }
     });
     input.click();
   });
-  undoBtn.addEventListener("click", () => {
-    if (store.undo()) render();
-  });
-  redoBtn.addEventListener("click", () => {
-    if (store.redo()) render();
-  });
   optimizeBtn.addEventListener("click", openOptimizer);
 
-  // ---- optimizer modal -------------------------------------------------------
+  const addKind = () => {
+    const id = `disk${Object.keys(store.get().kinds).length + 1}`;
+    commit(
+      (cfg) => ({
+        ...cfg,
+        kinds: {
+          ...cfg.kinds,
+          [id]: {
+            capacityTB: 8,
+            lambdaBase: 2.8e-6,
+            lambdaRead: 0,
+            lambdaWrite: 0,
+            ure: 7.9e-15,
+            readBW: 190e6,
+            writeBW: 170e6,
+            count: 4,
+            spares: 0,
+          },
+        },
+      }),
+      "add disk model",
+    );
+    selection = `kinds.${id}`;
+    renderAll();
+  };
+
+  // ---- command palette + keyboard ---------------------------------------------
+
+  const commands = () => [
+    { label: "Add pool member to selection", run: () => {
+        const target = isPoolPath(store.get(), selection) ? selection : "tree";
+        commit((c) => addPool(c, { strategy: "concat", parentPath: target }), "add pool");
+        renderAll();
+      } },
+    { label: "Add strip pool member", run: () => {
+        const target = isPoolPath(store.get(), selection) ? selection : "tree";
+        commit((c) => addPool(c, { strategy: "strip", parentPath: target }), "add strip pool");
+        renderAll();
+      } },
+    { label: "Add disk model", run: addKind },
+    { label: "Run evaluation", hint: "R", run },
+    { label: "Auto-optimize", run: () => optimizeBtn.click() },
+    { label: "Tidy canvas", hint: "T", run: () => commitUi((ui) => ({ ...ui, pos: {} }), { recordHistory: true }) },
+    { label: "Fit view", hint: "F", run: () => canvas.__view && canvas.__view.fit() },
+    { label: "Reset zoom", hint: "0", run: () => canvas.__view && canvas.__view.reset() },
+    { label: "Toggle results drawer", hint: "G", run: () => toggleDrawer() },
+    { label: "Scenario settings", run: () => { selection = SCENARIO_ID; renderAll(); } },
+    { label: "Set selection as top-level", run: () => promote(selection) },
+    { label: "Delete selection", hint: "Del", run: () => deleteSelection(selection) },
+    { label: "Undo", hint: "Ctrl+Z", run: () => { if (store.undo()) renderAll(); } },
+    { label: "Redo", hint: "Ctrl+Shift+Z", run: () => { if (store.redo()) renderAll(); } },
+    { label: "Export config", run: () => downloadConfig(store.get()) },
+    { label: "Shortcuts", hint: "?", run: () => openShortcuts({ host: rootEl }) },
+  ];
+
+  const isTyping = (t) =>
+    t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+
+  window.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      openPalette({ host: rootEl, commands: commands() });
+      return;
+    }
+    if (isTyping(e.target)) return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      if (e.shiftKey) {
+        if (store.redo()) renderAll();
+      } else if (store.undo()) renderAll();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+      e.preventDefault();
+      if (store.redo()) renderAll();
+      return;
+    }
+    if (e.key === " ") {
+      if (!isTyping(e.target)) e.preventDefault();
+      canvas.classList.add("space-pan");
+      return;
+    }
+    if (e.key === "Escape") {
+      if (document.querySelector(".modal")) document.querySelector(".modal").remove();
+      else if (selWire) {
+        selWire = null;
+        renderAll();
+      } else if (selection) {
+        selection = null;
+        renderAll();
+      }
+      return;
+    }
+    const k = e.key;
+    if (k === "r" || k === "R") run();
+    else if (k === "t" || k === "T")
+      commitUi((ui) => ({ ...ui, pos: {} }), { recordHistory: true });
+    else if (k === "f" || k === "F") canvas.__view && canvas.__view.fit();
+    else if (k === "0") canvas.__view && canvas.__view.reset();
+    else if (k === "g" || k === "G") toggleDrawer();
+    else if (k === "?" || k === "/") openShortcuts({ host: rootEl });
+    else if (k === "Delete" || k === "Backspace") {
+      e.preventDefault();
+      if (selWire) {
+        const child = selWire;
+        selWire = null;
+        commit((c) => removeNode(c, child), "cut link");
+        renderAll();
+      } else deleteSelection(selection);
+    }
+  });
+  window.addEventListener("keyup", (e) => {
+    if (e.key === " ") canvas.classList.remove("space-pan");
+  });
+
+  // ---- optimizer modal (unchanged surface, plus Apply) ------------------------
 
   async function openOptimizer() {
     const cfg = store.get();
     const modal = document.createElement("div");
     modal.className = "modal";
-    modal.innerHTML = `<div class="card"><h2>✦ Auto-optimize</h2><div class="optimizer-body">…</div></div>`;
+    modal.innerHTML =
+      '<div class="card"><h2>✦ Auto-optimize</h2><div class="optimizer-body">…</div></div>';
     rootEl.appendChild(modal);
     const body = modal.querySelector(".optimizer-body");
     const close = () => modal.remove();
@@ -459,36 +1075,24 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     try {
       mod = await import("../core/optimizer.js");
     } catch {
-      body.textContent =
-        "Optimizer not available yet — it lands in ticket 10 (parallel slice).";
+      body.textContent = "Optimizer module unavailable.";
       body.className = "note";
       return;
     }
     if (!mod.optimize) {
-      body.textContent =
-        "Optimizer module loaded but exposes no optimize() — ticket 10 pending.";
+      body.textContent = "Optimizer module exposes no optimize().";
       body.className = "note";
       return;
     }
-    await runOptimize(mod, cfg, body);
-  }
-
-  async function runOptimize(mod, cfg, body) {
     try {
       const res = await mod.optimize(cfg);
       if (!Array.isArray(res)) {
-        return `<div class="note">optimize() returned an unexpected shape (expected an array of designs).</div>`;
+        body.textContent = "optimize() returned an unexpected shape.";
+        return;
       }
       const table = document.createElement("table");
       const thead = document.createElement("tr");
-      for (const h of [
-        "#",
-        "Design",
-        "E[lost]",
-        "P(loss)",
-        "Usable",
-        "Bottleneck",
-      ])
+      for (const h of ["#", "Design", "E[lost]", "P(loss)", "Usable", "Why", ""])
         thead.appendChild(el("th", h));
       table.appendChild(thead);
       res.slice(0, 3).forEach((d, i) => {
@@ -496,83 +1100,70 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
         const tr = document.createElement("tr");
         if (i === 0) tr.className = "win";
         tr.appendChild(el("td", String(i + 1)));
-        const td = el("td", designLabel(d));
-        const why = el("td", d.reason ?? "");
-        why.className = "why";
-        tr.appendChild(td);
+        tr.appendChild(el("td", designLabel(d)));
         tr.appendChild(el("td", s.lost ?? "—"));
         tr.appendChild(el("td", s.anyLossPct ?? "—"));
         tr.appendChild(el("td", s.usable ?? "—"));
+        const why = el("td", d.reason ?? "");
+        why.className = "why";
         tr.appendChild(why);
+        const apply = el("td");
+        if (d.tree) {
+          const b = el("button", "Apply");
+          b.className = "ghost tiny";
+          b.addEventListener("click", () => {
+            commit((c) => ({ ...c, tree: structuredClone(d.tree) }), "apply design");
+            close();
+            renderAll();
+          });
+          apply.appendChild(b);
+        }
+        tr.appendChild(apply);
         table.appendChild(tr);
       });
-      const foot = el("div", "");
+      const foot = el("div");
       foot.className = "foot";
       const closeBtn = btn("Close", "ghost");
-      closeBtn.addEventListener("click", () =>
-        body.closest(".modal")?.remove(),
-      );
+      closeBtn.addEventListener("click", close);
       foot.appendChild(closeBtn);
       body.textContent = "";
       body.appendChild(table);
       body.appendChild(foot);
-      return "";
     } catch (e) {
-      const note = el(
-        "div",
-        `optimize() failed: ${e instanceof Error ? e.message : String(e)}`,
-      );
-      note.className = "note";
+      const n = el("div", `optimize() failed: ${e.message || e}`);
+      n.className = "note";
       body.textContent = "";
-      body.appendChild(note);
-      return "";
+      body.appendChild(n);
     }
   }
 
-  // ---- autosave + boot -------------------------------------------------------
+  // ---- boot -------------------------------------------------------------------
 
-  // Deliberately no localStorage: refresh always restores the known-good SAMPLE_CONFIG.
-  // Users persist intentionally via Export/Import; Reset example provides an in-session reset.
-  resetBtn.addEventListener("click", () => {
-    store.reset(structuredClone(SAMPLE_CONFIG));
-    selection = "tree";
-    lastResult = null;
-    lastError = null;
-    render();
-  });
-
-  render();
-
-  // assemble the app grid directly into the root element (#app carries the grid CSS)
-  rootEl.append(header, side, canvas, props);
-  return { store, getState: () => store.get(), run, selection };
+  renderAll();
+  scenarioChip.textContent = scenarioLabel(store.get());
+  store.subscribe(() => {
+    scenarioChip.textContent = scenarioLabel(store.get());
+  });  return { store, run, getState: () => store.get(), renderAll };
 }
 
-// self-bootstrap: works for both the dev page and the bundled single-file artifact
-if (typeof document !== "undefined" && document.getElementById("app")) {
-  createApp(document.getElementById("app"));
+function scenarioLabel(cfg) {
+  const w = cfg.workload || {};
+  return `${w.storeTB} TB · ${w.horizonY} y · ${cfg.global?.contention ? "contended" : "dedicated"}`;
 }
 
 // --- tiny DOM helpers ---------------------------------------------------------
 
 function el(tag, text) {
   const n = document.createElement(tag);
-  if (text) n.textContent = text;
+  if (text !== undefined) n.textContent = text;
   return n;
 }
+
 function btn(text, cls) {
   const b = document.createElement("button");
   b.textContent = text;
   if (cls) b.className = cls;
   return b;
-}
-function designLabel(d) {
-  if (d && d.tree) {
-    const s = d.tree.strategy || "";
-    const cnt = (d.tree.members || []).length;
-    return `${s} (${cnt} members)`;
-  }
-  return d && d.label ? String(d.label) : "design";
 }
 
 function palItem(text, color) {
@@ -584,4 +1175,21 @@ function palItem(text, color) {
   d.appendChild(dot);
   d.appendChild(el("span", text));
   return d;
+}
+
+function designLabel(d) {
+  if (d && d.tree) {
+    const s = d.tree.strategy || "";
+    const cnt = (d.tree.members || []).length;
+    return `${s} (${cnt} members)`;
+  }
+  return d && d.label ? String(d.label) : "design";
+}
+
+// self-bootstrap: works for both the dev page and the bundled single-file artifact.
+// The instance is exposed on the root element so a browser smoke test (scripts/ux-smoke.mjs) can
+// read live state instead of guessing from pixels.
+if (typeof document !== "undefined" && document.getElementById("app")) {
+  const root = document.getElementById("app");
+  root.__app = createApp(root);
 }

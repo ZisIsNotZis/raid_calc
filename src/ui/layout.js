@@ -1,41 +1,50 @@
 // Tidy-tree layout for the node canvas (raid-calc.md §3 tree constraint).
-// Pure functions over an abstract node tree: { id, children: [] }.
-// Returns a Map id -> { x, y } in layout units (the caller scales/offsets).
-// Top-down tree: children placed left-to-right with a horizontal gap, parent centered over
-// its children's roots. Leaves at y=0; each level descends by LEVEL_GAP.
+// Pure function over a node tree { id, children: [] } -> Map id -> { x, y } in canvas units.
+// Top-down: leaves advance a horizontal cursor by their own width, parents centre over their
+// children's roots, and each level's y is the previous level's TALLEST card + gap — cards differ
+// in height (a root with a result ribbon is taller than a collapsed pool). `heightOf` may be
+// called before the DOM exists: pass estimates, then re-run after measuring.
+export function tidyLayoutSized(
+  root,
+  { heightOf = () => 120, widthOf = () => 210, gapX = 44, gapY = 48 } = {},
+) {
+  const levelHeight = [];
+  const measure = (node, depth) => {
+    levelHeight[depth] = Math.max(levelHeight[depth] || 0, heightOf(node));
+    for (const c of node.children || []) measure(c, depth + 1);
+  };
+  measure(root, 0);
+  const yOf = [0];
+  for (let i = 1; i < levelHeight.length; i++)
+    yOf[i] = yOf[i - 1] + levelHeight[i - 1] + gapY;
 
-export const NODE_GAP = 60; // horizontal gap between siblings (layout units)
-export const LEVEL_GAP = 160; // vertical gap between levels (layout units)
-
-export function tidyLayout(root) {
-  // returns { layout: [{id,x,y}], width } for this subtree (root first)
-  const place = (node) => {
-    if (!node.children || node.children.length === 0) {
-      return { layout: [{ id: node.id, x: 0, y: 0 }], width: 1 };
+  const pos = new Map();
+  let cursor = 0;
+  // span = { left, right, cx } of the placed subtree
+  const place = (node, depth) => {
+    const w = widthOf(node);
+    const kids = node.children || [];
+    const self = { x: 0, y: yOf[depth] };
+    if (kids.length === 0) {
+      self.x = cursor;
+      cursor += w + gapX;
+      pos.set(node.id, self);
+      return { left: self.x, right: self.x + w, cx: self.x + w / 2 };
     }
-    const childLayouts = node.children.map(place);
-    let cursor = 0;
-    const xs = [];
-    const all = [];
-    for (const child of childLayouts) {
-      const childMinX = Math.min(...child.layout.map((p) => p.x));
-      const shift = cursor - childMinX;
-      for (const p of child.layout) p.x += shift;
-      xs.push(child.layout[0].x); // child root x
-      all.push(...child.layout);
-      cursor += child.width + NODE_GAP;
-    }
-    const parentX = (xs[0] + xs[xs.length - 1]) / 2;
-    const parentY = all[0].y - LEVEL_GAP; // children share the same y
+    const spans = kids.map((k) => place(k, depth + 1));
+    const cx = (spans[0].cx + spans[spans.length - 1].cx) / 2;
+    self.x = cx - w / 2;
+    pos.set(node.id, self);
     return {
-      layout: [{ id: node.id, x: parentX, y: parentY }, ...all],
-      width: cursor - NODE_GAP,
+      left: Math.min(spans[0].left, self.x),
+      right: Math.max(spans[spans.length - 1].right, self.x + w),
+      cx,
     };
   };
-  const { layout } = place(root);
-  const minX = Math.min(...layout.map((p) => p.x));
-  const minY = Math.min(...layout.map((p) => p.y));
-  const byId = new Map();
-  for (const p of layout) byId.set(p.id, { x: p.x - minX, y: p.y - minY });
-  return byId;
+  place(root, 0);
+  let minX = Infinity;
+  for (const p of pos.values()) minX = Math.min(minX, p.x);
+  for (const p of pos.values()) p.x = Math.round(p.x - minX);
+  for (const p of pos.values()) p.y = Math.round(p.y);
+  return pos;
 }

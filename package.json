@@ -3,11 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Hierarchical storage reliability calculator — mathematical expectation of data loss vs time",
+  "description": "Hierarchical storage reliability calculator \u2014 mathematical expectation of data loss vs time",
   "scripts": {
     "test": "vitest run",
     "demo": "node demo/demo.js",
-    "build": "node scripts/build.mjs"
+    "build": "node scripts/build.mjs",
+    "smoke": "node scripts/ux-smoke.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",
