@@ -17,13 +17,14 @@ Open `raid-calc.html` in any browser — no server, no network, fully offline. (
 - **Engine**: exact CTMC composition (no mean-field), computed rebuild times under bandwidth contention with the workload, URE hazard on bulk rebuild reads, common-cause shocks, global per-kind hot spares, operator/procurement delays.
 - **Two accounting modes**: rigorous (any corruption = file lost) and partial (chunks lost beyond parity — "kind of usable").
 - **Outputs**: E[lost data](t) and P(any loss)(t) per top-level pool; per-node standalone previews; deterministic auto-optimizer (greedy + local search under feasibility gates: capacity, per-disk bandwidth, spare inventory).
+- **Editor**: a tree-constrained node canvas. Pools are cards you drag, drop onto each other (re-parent), collapse, and wire by dragging ports; disk models live in the sidebar library and appear as chips on the pools that use them. While you drag a card over a pool, a live chip shows what the move would do to P(any loss), E[lost], rebuild slowdown and usable capacity. Undo/redo, command palette (Ctrl+K), keyboard shortcuts (?), results drawer with pinned curve overlays.
 - **Monte Carlo cross-check**: Gillespie simulation of the same semantics, validating the solver.
 
 ## Status / limitations (v1)
 
 - Solver perf: large joint state spaces (>~100k states) at multi-year horizons take minutes — the optimizer skips them (disclosed, `skippedLarge`); solver speedup is the top follow-up.
 - IOPS/latency, scrubbing, aging curves, operator error: non-goals for v1 (see docs/design/raid-calc.md).
-- UI: canvas + panels are functional; bundle is the deliverable (ticket 13 smoke test = manual browser open).
+- UI: verified by a real-browser smoke test (`npm run smoke`, Playwright) covering drag, re-parent, link create/cut, library drop, zoom and palette; screenshots land in `.scratch/01-raid-calc/evidence/`.
 
 ## Docs
 
@@ -35,4 +36,5 @@ Design truth lives in `docs/design/`: `raid-calc.md` (model), `optimizer.md`, `u
 npm test             # vitest: closed-form validations, worked examples, MC agreement, UI logic
 npm run demo         # CLI demo: evaluates two configs, prints curves
 npm run build        # esbuild -> raid-calc.html
+npm run smoke        # Playwright: drives raid-calc.html, writes screenshots as evidence
 ```
