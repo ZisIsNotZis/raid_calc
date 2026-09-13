@@ -53,6 +53,8 @@ Design refs: docs/design/ui.md (rewritten in this ticket), raid-calc.md §3, arc
 
 ## Comments (implementation + closure)
 
+- 2026-09-13 agent (pi, deepseek-v4): merged to master as a8cea7c (merge commit = ticket done + lock
+  release).
 - 2026-09-13 agent (pi, deepseek-v4): implemented in four commits on `ticket-14-canvas-ux`
   (7c98a9e feature, 77faaf6 / ed505ed / 41ab983 review rounds). All AC1–AC9 met; see the verification
   section below for the evidence behind each.
