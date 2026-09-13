@@ -112,8 +112,8 @@
   .chip b{color:var(--text);}
   .chip i{font-style:normal;}
   .chip .chip-link{display:inline-flex; gap:3px; cursor:pointer;}
-  .chip .x{background:transparent; border:0; color:var(--muted); cursor:pointer; font-size:11px; padding:0 2px; opacity:0; width:0;}
-  .chip:hover .x{opacity:1; width:auto;}
+  .chip .x{background:transparent; border:0; color:var(--muted); cursor:pointer; font-size:11px; padding:0 3px; opacity:0;}
+  .chip .x:focus-visible,.chip:hover .x{opacity:1;}
   .chip .x:hover{color:var(--accent2);}
   .chip .x.rm:hover{color:var(--bad);}
   .chip.add{cursor:pointer; border-style:dashed;}

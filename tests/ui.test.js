@@ -242,6 +242,7 @@ describe("persistence helpers", () => {
 
 import {
   canReparent,
+  setPath,
   moveMember,
   removeNode,
   removeKind,
@@ -639,5 +640,45 @@ describe("positions: slot indices must be true member indices (regression)", () 
     expect(t.children[0].children[0].id).toBe("tree.members[0].members[1]");
     const p = canvasPositions(cfg);
     expect(p.has("tree.members[0].members[1]")).toBe(true);
+  });
+});
+
+describe("canvas: root-level edits and promotion plan (regressions)", () => {
+  it("setPath accepts the root itself as the target", () => {
+    const cfg = sampleConfig();
+    const next = setPath(cfg, "tree", { ...cfg.tree, lambdaCC: 0.003 });
+    expect(next.tree.lambdaCC).toBe(0.003);
+    expect(next.tree.members).toHaveLength(1);
+    expect(cfg.tree.lambdaCC).toBe(0);
+  });
+
+  it("setPath still reaches nested nodes and disk models", () => {
+    const cfg = nestedConfig();
+    expect(setPath(cfg, "tree.members[0]", { ...cfg.tree.members[0], d: 9 }).tree.members[0].d).toBe(9);
+    expect(setPath(cfg, "kinds.hdd8", { ...cfg.kinds.hdd8, count: 3 }).kinds.hdd8.count).toBe(3);
+  });
+
+  it("setRootPlan counts the nodes a wrap would absorb, never the promoted pool itself", () => {
+    const cfg = nestedConfig();
+    expect(setRootPlan(cfg, "tree.members[0]")).toEqual({ kind: "wrap", others: 1 });
+    const deep = nestedConfig();
+    deep.tree.members[0] = {
+      node: "pool",
+      strategy: "concat",
+      lambdaCC: 0,
+      members: [deep.tree.members[1]],
+    };
+    // promoting the nested pool leaves the whole old root to be nested: 2 top-level members
+    expect(setRootPlan(deep, "tree.members[0].members[0]").kind).toBe("wrap");
+  });
+
+  it("rekeyPositions follows an explicit hint for a node the operation rebuilt", () => {
+    const before = nestedConfig();
+    const pos = { "tree.members[0]": { x: 111, y: 222 } };
+    const after = setRoot(before, "tree.members[0]", { wrap: true });
+    const re = rekeyPositions(before, after, pos, { "tree.members[0]": "tree" });
+    expect(re.tree).toEqual({ x: 111, y: 222 });
+    // and the promoted node's old path must not be handed to the newly nested child
+    expect(re["tree.members[0]"]).toBeUndefined();
   });
 });

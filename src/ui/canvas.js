@@ -62,6 +62,7 @@ export function setPath(config, path, value) {
   const parts = path.split(".");
   if (parts[0] !== "tree")
     throw new Error(`cannot set path outside tree: ${path}`);
+  if (parts.length === 1) return { ...config, tree: value };
   const setIn = (node, idx) => {
     const part = parts[idx];
     const m = /^members\[(\d+)\]$/.exec(part);
@@ -120,12 +121,14 @@ export function setRootPlan(config, poolPath) {
   const parentPath = parentPathOf(poolPath);
   if (!parentPath) return { kind: "noop", others: 0 };
   const parent = resolvePath(config, parentPath);
-  const siblings = (parent.members || []).length - 1;
   const outsideRoot = parentPath !== "tree";
-  return {
-    kind: !outsideRoot && siblings === 0 ? "swap" : "wrap",
-    others: outsideRoot ? (parent.members || []).length : siblings,
-  };
+  const oldRoot = resolvePath(config, "tree");
+  // what the wrap would nest under the promoted pool, excluding the promoted pool itself: the
+  // siblings it leaves behind, or the whole old root when the promoted pool came from deeper
+  const others = outsideRoot
+    ? (oldRoot.members || []).length
+    : (parent.members || []).length - 1;
+  return { kind: !outsideRoot && others === 0 ? "swap" : "wrap", others };
 }
 
 export function setRoot(config, poolPath, { wrap = false } = {}) {
@@ -314,6 +317,23 @@ export function sparkPath(values, w, h, pad = 3) {
   return d;
 }
 
+// Bind the container's listeners exactly once; the body dispatches through `container.__ctx`, which
+// each render replaces with handlers closing over that render's state.
+function mountCanvas(container) {
+  if (container.__mounted) return;
+  container.__mounted = true;
+  const call = (name) => (e) => {
+    const ctx = container.__ctx;
+    if (ctx && ctx[name]) ctx[name](e);
+  };
+  container.addEventListener("pointerdown", call("pointerdown"));
+  container.addEventListener("pointerdown", call("spacePan"));
+  container.addEventListener("pointerdown", call("middlePan"));
+  container.addEventListener("contextmenu", call("contextmenu"));
+  container.addEventListener("dblclick", call("dblclick"));
+  container.addEventListener("wheel", call("wheel"), { passive: false });
+}
+
 function el(tag, text) {
   const n = document.createElement(tag);
   if (text !== undefined) n.textContent = text;
@@ -413,7 +433,6 @@ export function renderCanvas({
   const view = { ...(ui.view || { x: 40, y: 20, zoom: 1 }) };
 
   container.innerHTML = "";
-  container.classList.add("vp");
 
   const world = el("div");
   world.className = "world";
@@ -504,6 +523,49 @@ export function renderCanvas({
     add.dataset.path = id;
     wrap.appendChild(add);
     return wrap;
+  };
+
+  // Re-measure cards and re-place the auto-laid-out ones. Called whenever something changes a
+  // card's height outside a render (the standalone-preview block arrives asynchronously), because a
+  // grown card would otherwise sit on top of its own wire.
+  const reflow = () => {
+    let drifted = false;
+    const live = new Set();
+    for (const [id, c] of cards) {
+      const h = c.el.offsetHeight;
+      const prev = heights.get(id);
+      if (prev === undefined || Math.abs(prev - h) > 4) drifted = true;
+      heights.set(id, h);
+      live.add(id);
+    }
+    for (const id of [...heights.keys()]) if (!live.has(id)) heights.delete(id);
+    if (!drifted) return false;
+    applyBaseLayout(heights);
+    for (const [id, p] of Object.entries(pos))
+      if (positions.has(id) && p) place(id, { x: p.x + PAD, y: p.y + PAD });
+    drawEdges();
+    return true;
+  };
+
+  // Selection without a re-render: a rebuild here would swallow the second click of a double-click.
+  const setSelectionInPlace = (next) => {
+    selection = next;
+    for (const [id, c] of cards) {
+      c.el.classList.toggle("sel", id === next);
+      const old = c.el.querySelector(".nodepreview");
+      if (old) old.remove();
+    }
+    const c = cards.get(next);
+    if (c && !collapsed[next]) {
+      const bd = c.el.querySelector(".bd");
+      if (bd) {
+        const box = previewPlaceholder();
+        renderPreviewBlock(box, results.get(next));
+        bd.appendChild(box);
+      }
+    }
+    reflow();
+    drawMinimap();
   };
 
   const previewPlaceholder = () => {
@@ -775,7 +837,6 @@ export function renderCanvas({
   hud.appendChild(fitBtn);
   hud.appendChild(zhint);
   hud.appendChild(zoomLabel);
-  hud.appendChild(minimap);
 
   const chip = el("div");
   chip.className = "drag-chip";
@@ -783,6 +844,7 @@ export function renderCanvas({
 
   container.appendChild(world);
   container.appendChild(hud);
+  container.appendChild(minimap);
   container.appendChild(chip);
 
   // ---- gesture plumbing -------------------------------------------------------
@@ -874,6 +936,49 @@ export function renderCanvas({
 
   // ---- pointer handling -------------------------------------------------------
 
+  const unlisten = () => {
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+    window.removeEventListener("pointercancel", onPointerCancel);
+    window.removeEventListener("keydown", onGestureKey);
+  };
+  const listen = () => {
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerCancel);
+    window.addEventListener("keydown", onGestureKey);
+  };
+
+  // Abort without committing: Esc, a cancelled pointer, or a lost window. Restores the card where
+  // the gesture started and drops every transient visual.
+  const abortGesture = () => {
+    const g = gesture;
+    gesture = null;
+    unlisten();
+    hideChip();
+    clearTargetStyles();
+    ghostLayer.innerHTML = "";
+    if (g && g.type === "move") {
+      if (cardDragging) {
+        cardDragging = false;
+        const c = cards.get(g.id);
+        if (c) c.el.classList.remove("dragging");
+      }
+      if (g.moved) {
+        place(g.id, g.startPos);
+        drawEdges();
+      }
+    }
+    return !!g;
+  };
+  const onPointerCancel = () => abortGesture();
+  const onGestureKey = (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    abortGesture();
+  };
+
   const onPointerMove = (e) => {
     if (!gesture) return;
     const dx = e.clientX - gesture.startClient.x;
@@ -941,11 +1046,9 @@ export function renderCanvas({
       gesture.badTarget = null;
       clearTargetStyles();
       if (targetId && targetId !== gesture.id) {
-        const node = resolvePath(config, targetId);
-        const ok =
-          isPoolNode(node) &&
-          !isDescendantPath(targetId, gesture.id) &&
-          parentPathOf(gesture.id) !== targetId;
+        const check = canReparent(config, gesture.id, targetId);
+        const alreadyParent = parentPathOf(gesture.id) === targetId;
+        const ok = check.ok && !alreadyParent;
         const targetEl = cards.get(targetId).el;
         if (ok) {
           gesture.target = targetId;
@@ -953,9 +1056,9 @@ export function renderCanvas({
         } else {
           targetEl.classList.add("drop-bad");
           gesture.badTarget = targetId;
-          gesture.badReason = isPoolNode(node)
-            ? "a pool cannot contain itself or its own descendant"
-            : "only a pool can hold members";
+          gesture.badReason = alreadyParent
+            ? "already a member of that pool"
+            : check.reason;
         }
       }
       if (from) {
@@ -971,8 +1074,7 @@ export function renderCanvas({
   };
 
   const onPointerUp = (e) => {
-    window.removeEventListener("pointermove", onPointerMove);
-    window.removeEventListener("pointerup", onPointerUp);
+    unlisten();
     const g = gesture;
     gesture = null;
     hideChip();
@@ -1020,15 +1122,22 @@ export function renderCanvas({
         if (actions.onRejectDrop) actions.onRejectDrop(g.id, g.badReason);
         return;
       }
-      if (g.parentId) {
-        if (actions.onCutLink) actions.onCutLink(g.id);
-      } else if (actions.onQuickAdd) {
-        actions.onQuickAdd(g.id, { x: e.clientX, y: e.clientY });
-      }
+      // releasing a link on empty canvas cuts it (the root has no out port, so every link drag
+      // starts from a node that has a parent)
+      if (actions.onCutLink) actions.onCutLink(g.id);
     }
   };
 
   const onPointerDown = (e) => {
+    // Wires are selected on pointerdown, not click: selecting on click would have to survive the
+    // re-render that deselecting on empty canvas triggers between down and up, which moves the click
+    // target to the canvas and loses the event entirely.
+    const wire = e.target.closest(".wire-hit");
+    if (wire) {
+      e.preventDefault();
+      if (actions.onWireClick) actions.onWireClick(wire.dataset.child);
+      return;
+    }
     const act = e.target.closest("[data-act]");
     if (act) {
       e.preventDefault();
@@ -1066,8 +1175,7 @@ export function renderCanvas({
         moved: false,
         target: null,
       };
-      window.addEventListener("pointermove", onPointerMove);
-      window.addEventListener("pointerup", onPointerUp);
+      listen();
       return;
     }
 
@@ -1091,18 +1199,19 @@ export function renderCanvas({
       previewKey: null,
       delta: null,
     };
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
+    listen();
   };
 
-  container.addEventListener("pointerdown", onPointerDown);
+  container.__dragActive = () => !!gesture;
+  container.__setSelection = setSelectionInPlace;
+  container.__reflow = reflow;
 
-  container.addEventListener("contextmenu", (e) => {
+  const onContextMenuEvent = (e) => {
     const card = e.target.closest(".node");
     if (!card) return;
     e.preventDefault();
     if (actions.onContextMenu) actions.onContextMenu(e, card.dataset.id);
-  });
+  };
 
   edgeLayer.addEventListener("pointerover", (e) => {
     const hit = e.target.closest(".wire-hit");
@@ -1113,14 +1222,8 @@ export function renderCanvas({
   edgeLayer.addEventListener("pointerout", (e) => {
     if (e.target.closest(".wire-hit")) removeHoverCut();
   });
-  edgeLayer.addEventListener("click", (e) => {
-    const hit = e.target.closest(".wire-hit");
-    if (!hit) return;
-    if (actions.onWireClick) actions.onWireClick(hit.dataset.child);
-  });
-
   // space-drag pan
-  container.addEventListener("pointerdown", (e) => {
+  const spacePanDown = (e) => {
     if (!container.classList.contains("space-pan")) return;
     e.preventDefault();
     const start = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
@@ -1138,10 +1241,10 @@ export function renderCanvas({
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
-  });
+  };
 
   // middle-drag pan
-  container.addEventListener("pointerdown", (e) => {
+  const middlePanDown = (e) => {
     if (e.button !== 1) return;
     e.preventDefault();
     const start = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
@@ -1157,29 +1260,25 @@ export function renderCanvas({
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
-  });
+  };
 
-  container.addEventListener(
-    "wheel",
-    (e) => {
-      e.preventDefault();
-      const pt = canvasPoint(e);
-      if (e.shiftKey) {
-        view.x -= e.deltaY;
-      } else {
-        const next = zoomAt(view, Math.exp(-e.deltaY * 0.0015), pt.x, pt.y);
-        view.x = next.x;
-        view.y = next.y;
-        view.zoom = next.zoom;
-      }
-      applyView();
-      if (actions.onView) actions.onView({ ...view });
-    },
-    { passive: false },
-  );
+  const onWheel = (e) => {
+    e.preventDefault();
+    const pt = canvasPoint(e);
+    if (e.shiftKey) {
+      view.x -= e.deltaY;
+    } else {
+      const next = zoomAt(view, Math.exp(-e.deltaY * 0.0015), pt.x, pt.y);
+      view.x = next.x;
+      view.y = next.y;
+      view.zoom = next.zoom;
+    }
+    applyView();
+    if (actions.onView) actions.onView({ ...view });
+  };
 
   // inline editing of numeric card values
-  container.addEventListener("dblclick", (e) => {
+  const onDblClick = (e) => {
     const row = e.target.closest(".kv[data-editable]");
     if (!row) return;
     const card = e.target.closest(".node");
@@ -1215,7 +1314,20 @@ export function renderCanvas({
     input.focus();
     input.select();
     e.preventDefault();
-  });
+  };
+
+  // Every listener lives on the container, which outlives each render (only its innerHTML is
+  // replaced). Registering per render would stack N copies of every handler and fire each user
+  // action N times, so the handlers are published here and mounted exactly once.
+  container.__ctx = {
+    pointerdown: (e) => onPointerDown(e),
+    contextmenu: (e) => onContextMenuEvent(e),
+    wheel: (e) => onWheel(e),
+    dblclick: (e) => onDblClick(e),
+    spacePan: (e) => spacePanDown(e),
+    middlePan: (e) => middlePanDown(e),
+  };
+  mountCanvas(container);
 
   // ---- view commands for keyboard shortcuts ------------------------------------
 
@@ -1265,12 +1377,31 @@ export function renderCanvas({
 
   // ---- build ------------------------------------------------------------------
 
-  const order = [];
-  walkPools(config.tree, "tree", (_n, path) => order.push(path));
+  // Collapsed pools hide their whole subtree: the layout tree skips those children, so a card that
+  // were still drawn would get no position at all and pile up at the static origin.
+  const collectVisible = (node, path, acc) => {
+    acc.push(path);
+    if (collapsed[path]) return acc;
+    for (let i = 0; i < (node.members || []).length; i++) {
+      const m = node.members[i];
+      if (m.node === "pool") collectVisible(m, `${path}.members[${i}]`, acc);
+    }
+    return acc;
+  };
+  const visible = new Map();
+  for (const id of collectVisible(config.tree, "tree", []))
+    visible.set(id, resolvePath(config, id));
+  const order = [...visible.keys()];
   for (const id of order) drawCard(id);
 
+  // Seed from the measured heights of the previous render and only fall back to an estimate for
+  // cards we have never seen. Seeding from estimates while correcting against the cache would leave
+  // a warm render on stale positions whenever the estimate was off (and `reflow` saw no drift).
   const estimates = new Map(
-    order.map((id) => [id, estimateHeight(id, config, collapsed[id])]),
+    order.map((id) => [
+      id,
+      heights.get(id) ?? estimateHeight(id, config, collapsed[id]),
+    ]),
   );
   const applyBaseLayout = (hMap) => {
     const computed = canvasPositions(config, { pos, collapsed, heights: hMap });
@@ -1283,20 +1414,7 @@ export function renderCanvas({
   drawEdges();
 
   // measure, then re-place anything the height estimate misplaced (single correction pass)
-  let drifted = false;
-  for (const [id, c] of cards) {
-    const h = c.el.offsetHeight;
-    const prev = heights.get(id);
-    if (prev === undefined || Math.abs(prev - h) > 4) drifted = true;
-    heights.set(id, h);
-  }
-  if (drifted) {
-    applyBaseLayout(heights);
-    for (const [id, p] of Object.entries(pos)) {
-      if (positions.has(id) && p) place(id, { x: p.x + PAD, y: p.y + PAD });
-    }
-    drawEdges();
-  }
+  reflow();
 
   applyView();
   return { heights, positions };

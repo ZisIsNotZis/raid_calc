@@ -1,5 +1,5 @@
 // Results: run evaluation, render charts + summary, per-node preview (debounced).
-import { evaluate, ConfigError, BuildError } from "../core/evaluate.js";
+import { evaluate } from "../core/evaluate.js";
 import { validate } from "../core/config.js";
 import { fmtBytes } from "./charts.js";
 import { TB, HOURS_PER_YEAR } from "../core/config.js";
@@ -15,14 +15,7 @@ export function safeEvaluate(config, { stateBudget, points } = {}) { // no defau
   try {
     return { ok: true, result: runConfig(config, { stateBudget, points }) };
   } catch (err) {
-    if (
-      err instanceof ConfigError ||
-      err instanceof BuildError ||
-      err instanceof Error
-    ) {
-      return { ok: false, error: err.message };
-    }
-    return { ok: false, error: String(err) };
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

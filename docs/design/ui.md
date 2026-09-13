@@ -51,17 +51,17 @@ Nothing is duplicated across regions. Top-level results have exactly one home (�
 | Gesture | Effect |
 |---|---|
 | Pointer-drag a card (>4px), drop on empty canvas | Move (persists to `ui.pos`) |
-| Pointer-drag a card, drop on a pool card | Re-parent: becomes a member of that pool |
-| Pointer-drag a card, drop on the top/bottom edge of a pool card | Re-parent and insert first / last |
+| Pointer-drag a card, drop on a pool card | Re-parent: becomes a member of that pool (appended last) |
 | Drag a library kind onto a pool card | Append a kind-ref member |
-| Drag a card's **input port** away | Detach from its parent; drop on a pool to re-parent, on empty canvas to delete |
-| Drag an **output port** | Create a link; legal targets highlight and snap, illegal targets show the reason |
-| Release a link drag on empty canvas | Quick-add menu of legal containers for the dragged source |
-| Click a wire | Select it (highlight); `Del` removes it |
+| Drag a card's **top port** (`out`) | Re-link: the card detaches from its parent and follows the cursor; drop on another pool to re-parent |
+| Release a link drag on empty canvas | Cuts the link (the card leaves the tree) |
+| Release any drag on an *illegal* target | Reverts to where the gesture started, and the reason stays on screen — nothing is parked on top of the target |
+| Click a wire | Selects it (highlight); `Del` removes it |
 | Hover a wire | ✕ button at the midpoint removes it |
 | Click a card | Select (properties panel); double-click a value on the card edits it in place |
-| `Esc` | Cancel drag / close palette / deselect |
-| Right-click a card | Context menu: Set as top-level, Collapse, Delete, Copy config JSON |
+| `Esc` | Cancel an in-flight drag / close palette / deselect |
+| Drag a pool's **bottom port** (`in`) | Drop target only — the pool's member input; it holds many members, so it has no single link to grab |
+| Right-click a card | Context menu: Set as top-level, Collapse, Add member pool, Wrap in a new pool, Copy config JSON, Delete |
 
 Legality is computed **during** the drag by a pure predicate that returns `{ok, reason}`, so the reason
 (`"a pool cannot contain its own ancestor"`, `"only a pool can be a member of a pool"`) is visible while
@@ -76,11 +76,13 @@ hovering instead of surfacing as a failure after release.
   side by side), plus the full metric list. Comparison overlays for pinned configs and optimizer top-3
   render here.
 - **Per-node standalone preview**: selecting a pool evaluates that subtree standalone (workload scaled by
-  its share of top-level usable capacity) and shows the four metrics as a sparkline + numbers on the
-  card, debounced 300 ms, with a reduced state budget so oversized subtrees fail fast. Evaluations run on
-  the main thread with a small point count and state budget — a Worker is deliberately **not** used in
-  v1 (single-file bundle, no cross-origin worker); v1's "computed in the worker" claim was never built and
-  is dropped here rather than restated.
+  its share of top-level usable capacity) and shows three metrics (E[lost], P(any loss), rebuild
+  slowdown) plus a sparkline on the card, debounced 300 ms, with a reduced state budget so oversized
+  subtrees fail fast. The block is filled in place after the render and the canvas then re-measures card
+  heights and re-runs the layout — a card that grew after layout would otherwise sit on top of its own
+  wire. Evaluations run on the main thread with a small point count and state budget; a Worker is
+  deliberately **not** used (single-file bundle, no cross-origin worker) — v1's "computed in the worker"
+  was never built and is dropped here rather than restated.
 - **Drop preview** (the reason the canvas is an instrument, not a diagram): while hovering a legal drop
   target, a chip next to the cursor shows the metric deltas the drop would cause
   (`P 8.1% → 4.3%`, `E[lost] 1.2 → 0.4 TB`, `slowdown 3.1× → 1.4×`, `usable 40 → 36 TB`). Baseline and
@@ -103,10 +105,13 @@ infeasible workload) with an explanatory tooltip; the last good curves stay visi
 
 ## 7. Palette and keyboard
 
-`Ctrl+K` (or `/`) opens a fuzzy command palette: add disk model, add pool, tidy, fit, set as top-level,
-collapse all, run, auto-optimize, open results, scenario, export/import, reset, undo/redo, delete
-selection. Keyboard: `Ctrl+Z`/`Ctrl+Shift+Z` undo/redo, `Del` delete selection, `R` run, `T` tidy,
-`F` fit, `0` reset view, `G` results drawer, `Esc` cancel, `Space`-drag pan.
+`Ctrl+K` opens a fuzzy command palette: add disk model, add pool, tidy, fit, set as top-level, wrap in
+a new pool, run, auto-optimize, open results, scenario, export/import, undo/redo, delete selection.
+`?` opens the shortcut sheet. Keyboard: `Ctrl+Z`/`Ctrl+Shift+Z` undo/redo, `Del` delete selection,
+`R` run, `T` tidy, `F` fit, `0` reset view, `G` results drawer, `Esc` cancel a drag, `Space`+drag pan.
+
+Promoting a pool whose old root had other members asks once before nesting the old root under it, so no
+configuration is ever silently discarded; its stored position follows the promoted node.
 
 ## 8. Auto-optimize surface
 

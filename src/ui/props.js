@@ -10,6 +10,7 @@ import {
   removeNode,
   addPool,
   setMemberCount,
+  setPath,
 } from "./canvas.js";
 
 const STRATEGY_LABELS = {
@@ -105,7 +106,7 @@ export function renderProps(
 
   // ---- field builders ---------------------------------------------------------
 
-  const field = (label, { key, parse, min, unit, placeholder, section }) => {
+  const field = (label, { key, parse, min, unit, placeholder }) => {
     const wrap = el("div");
     wrap.className = "field";
     wrap.appendChild(el("label", label));
@@ -113,7 +114,7 @@ export function renderProps(
     const input = document.createElement("input");
     input.type = "text";
     input.placeholder = placeholder ?? "";
-    const sec = section || keyCtx[key] || "workload";
+    const sec = keyCtx[key] || "workload";
     const raw =
       info.type === "kind"
         ? info.node[key]
@@ -361,6 +362,9 @@ const keyCtx = {
   rebuildBw: "global",
 };
 
+// Pool and disk-model fields are replaced whole at their own path (canvas.js `setPath`), so a pool
+// edit can never land in the scenario section by accident; scenario fields are the only ones that
+// address config.global / config.workload.
 function setField(cfg, info, key, value) {
   if (info.type === "kind") {
     return {
@@ -371,40 +375,26 @@ function setField(cfg, info, key, value) {
       },
     };
   }
+  if (info.type === "pool") {
+    const node = resolvePath(cfg, info.path);
+    return setPath(cfg, info.path, { ...node, [key]: value });
+  }
   const section = keyCtx[key] || "workload";
   return { ...cfg, [section]: { ...(cfg[section] || {}), [key]: value } };
 }
 
-function updateNodeAtPath(cfg, path, fn) {
-  if (!path || path === "tree") return { ...cfg, tree: fn(cfg.tree) };
-  const parts = path.split(".");
-  const setIn = (node, idx) => {
-    const part = parts[idx];
-    const m = /^members\[(\d+)\]$/.exec(part);
-    if (m) {
-      const members = node.members.slice();
-      members[Number(m[1])] = setIn(members[Number(m[1])], idx + 1);
-      return { ...node, members };
-    }
-    if (idx === parts.length - 1) return fn(node);
-    return { ...node, [part]: setIn(node[part], idx + 1) };
-  };
-  return { ...cfg, tree: setIn(cfg.tree, 1) };
-}
-
 function switchStrategy(cfg, path, strategy) {
-  return updateNodeAtPath(cfg, path, (node) => {
-    const next = {
-      node: "pool",
-      strategy,
-      lambdaCC: node.lambdaCC ?? 0,
-      members: node.members ?? [],
-    };
-    if (strategy === "strip") next.d = node.d ?? 1;
-    if (strategy === "split" || strategy === "strip-split") next.n = node.n ?? 1;
-    if (strategy !== "concat") next.m = node.m ?? 0;
-    return next;
-  });
+  const node = resolvePath(cfg, path);
+  const next = {
+    node: "pool",
+    strategy,
+    lambdaCC: node.lambdaCC ?? 0,
+    members: node.members ?? [],
+  };
+  if (strategy === "strip") next.d = node.d ?? 1;
+  if (strategy === "split" || strategy === "strip-split") next.n = node.n ?? 1;
+  if (strategy !== "concat") next.m = node.m ?? 0;
+  return setPath(cfg, path, next);
 }
 
 function setGlobalBool(cfg, key, value) {

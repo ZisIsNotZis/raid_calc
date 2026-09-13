@@ -51,12 +51,20 @@ function pathExists(config, path) {
 // node objects they did not touch, so identity — not index — decides which position belongs to
 // which node. Without this, deleting members[0] would slide members[1]'s position onto the wrong
 // card (and a freshly added node would inherit it).
-export function rekeyPositions(oldConfig, newConfig, pos) {
+//
+// `hints` covers the one operation that must rebuild a node on purpose (promoting a pool into a
+// wrapped root): it maps an old path to the path holding the same node afterwards, and marks that
+// old path as consumed so the path-based fallback cannot hand its position to a different node.
+export function rekeyPositions(oldConfig, newConfig, pos, hints = {}) {
   const oldPaths = collect(oldConfig);
   const out = {};
+  const consumed = new Set();
   const walk = (node, path) => {
     const from = oldPaths.get(node);
-    if (from && pos[from]) out[path] = pos[from];
+    if (from && pos[from]) {
+      out[path] = pos[from];
+      consumed.add(from);
+    }
     if (node.node === "pool")
       (node.members || []).forEach((m, i) =>
         walk(m, `${path}.members[${i}]`),
@@ -65,11 +73,21 @@ export function rekeyPositions(oldConfig, newConfig, pos) {
   if (newConfig.tree) walk(newConfig.tree, "tree");
   for (const [id, kind] of Object.entries(newConfig.kinds || {})) {
     const from = oldPaths.get(kind);
-    if (from && pos[from]) out[`kinds.${id}`] = pos[from];
+    if (from && pos[from]) {
+      out[`kinds.${id}`] = pos[from];
+      consumed.add(from);
+    }
+  }
+  for (const [from, to] of Object.entries(hints)) {
+    if (pos[from]) {
+      out[to] = pos[from];
+      consumed.add(from);
+    }
   }
   // Field edits replace a node object without moving it: its path survives, so keep its position.
   for (const [path, value] of Object.entries(pos))
-    if (!(path in out) && pathExists(newConfig, path)) out[path] = value;
+    if (!(path in out) && !consumed.has(path) && pathExists(newConfig, path))
+      out[path] = value;
   return out;
 }
 

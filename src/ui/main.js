@@ -19,6 +19,7 @@ import {
   setMemberCount,
   setRoot,
   setRootPlan,
+  setPath,
   kindUsage,
 } from "./canvas.js";
 import { rekeyPositions } from "./positions.js";
@@ -164,7 +165,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
 
   // ---- config helpers ---------------------------------------------------------
 
-  const commit = (mutator, label) => {
+  const commit = (mutator, label, { posHints } = {}) => {
     try {
       const before = store.get();
       const next = mutator(before);
@@ -175,7 +176,12 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       } catch (err) {
         msg = err.message;
       }
-      const after = rekeyPositions(before, next, (before.ui || {}).pos || {});
+      const after = rekeyPositions(
+        before,
+        next,
+        (before.ui || {}).pos || {},
+        posHints,
+      );
       const withUi = { ...next, ui: { ...(next.ui || before.ui || {}), pos: after } };
       store.set(() => withUi);
       setRunError(msg);
@@ -300,21 +306,26 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     cheapCache.clear();
     const cfg = store.get();
     setRunError(validationError(cfg));
-    renderCanvas({
-      container: canvas,
-      config: cfg,
-      selection,
-      selWire,
-      ui: cfg.ui || {},
-      results: cardResults,
-      heights,
-      actions: {
+    renderCanvas(canvasArgs(cfg));
+    renderProps(props, propsArgs());
+    renderSidebar(cfg);
+    renderDrawer();
+    schedulePreview();
+  };
+
+  const canvasActions = () => ({
         onSelect: (id) => {
           const previous = selection;
+          if (previous === id) return;
           selection = id;
           selWire = null;
           if (previous && previous !== "tree") cardResults.delete(previous);
-          renderAll();
+          // Selection must not rebuild the canvas: replacing the card DOM on pointerup swallows the
+          // second click of a double-click, which is how a value gets edited in place.
+          if (canvas.__setSelection) canvas.__setSelection(id);
+          renderProps(props, propsArgs());
+          renderSidebar(store.get());
+          schedulePreview();
         },
         onWireClick: (childId) => {
           selWire = childId;
@@ -355,12 +366,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
           renderAll();
         },
         onRemoveMember: (path, slot) => {
-          commit((c) => {
-            const pool = resolvePath(c, path);
-            const members = pool.members.slice();
-            members.splice(slot, 1);
-            return { ...c, tree: replaceMembers(c.tree, path, members) };
-          }, "remove member");
+          commit((c) => removeNode(c, `${path}.members[${slot}]`), "remove member");
           renderAll();
         },
         onQuickAddMember: (path) => {
@@ -368,7 +374,6 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
           commit((c) => (kid ? connectDiskToPool(c, kid, path) : addPool(c, { parentPath: path })), "add member");
           renderAll();
         },
-        onQuickAdd: (nodePath, point) => openQuickAdd(nodePath, point),
         onPreviewDrop,
         onRejectDrop: (id, reason) => {
           toast(reason || "that drop is not allowed", "bad");
@@ -378,68 +383,54 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
         },
         onOpenResults: () => toggleDrawer(true),
         onInlineEdit: (id, key, value) => {
-          commit((c) => {
-            const node = resolvePath(c, id);
-            return { ...c, tree: replaceNode(c.tree, id, { ...node, [key]: value }) };
-          }, "inline edit");
+          commit(
+            (c) => setPath(c, id, { ...resolvePath(c, id), [key]: value }),
+            "inline edit",
+          );
           renderAll();
         },
         onContextMenu: (e, id) => openContextMenu(e, id),
-      },
-    });
-    renderProps(props, {
-      config: cfg,
-      selection,
-      onSet: commit,
-      onPromote: (path) => promote(path),
-      onDelete: (path) => deleteSelection(path),
-      previewNote:
-        selection && selection !== "tree" && isPoolPath(cfg, selection)
-          ? "Standalone preview shown on the card."
-          : null,
-    });
-    renderSidebar(cfg);
-    renderDrawer();
-    schedulePreview();
+  });
+
+  const propsArgs = () => ({
+    config: store.get(),
+    selection,
+    // A form edit changes the cards (chips, capacity) and the library, so refresh those without
+    // rebuilding the form: rebuilding it would drop focus mid-edit.
+    onSet: (mutator, label) => {
+      const ok = commit(mutator, label);
+      if (ok) {
+        renderCanvasOnly();
+        renderSidebar(store.get());
+      }
+      return ok;
+    },
+    onPromote: (path) => promote(path),
+    onDelete: (path) => deleteSelection(path),
+    previewNote:
+      selection && selection !== "tree" && isPoolPath(store.get(), selection)
+        ? "Standalone preview shown on the card."
+        : null,
+  });
+
+  // Canvas-only re-render shared by the in-place paths (selection, form edits).
+  const renderCanvasOnly = () => {
+    cheapCache.clear();
+    renderCanvas(canvasArgs(store.get()));
   };
 
+  const canvasArgs = (cfg) => ({
+    container: canvas,
+    config: cfg,
+    selection,
+    selWire,
+    ui: cfg.ui || {},
+    results: cardResults,
+    heights,
+    actions: canvasActions(),
+  });
+
   const isPoolPath = (cfg, path) => isPoolNode(resolvePath(cfg, path));
-
-  // ---- tree surgery helpers ---------------------------------------------------
-
-  function replaceNode(tree, path, value) {
-    if (path === "tree") return value;
-    const parts = path.split(".").slice(1);
-    const setIn = (node, idx) => {
-      const part = parts[idx];
-      const m = /^members\[(\d+)\]$/.exec(part);
-      if (m) {
-        const members = node.members.slice();
-        members[Number(m[1])] = setIn(members[Number(m[1])], idx + 1);
-        return { ...node, members };
-      }
-      throw new Error(`unsupported path segment ${part}`);
-    };
-    return setIn(tree, 0);
-  }
-
-  function replaceMembers(tree, path, members) {
-    if (path === "tree") return { ...tree, members };
-    const parts = path.split(".").slice(1);
-    const setIn = (node, idx) => {
-      const part = parts[idx];
-      const m = /^members\[(\d+)\]$/.exec(part);
-      if (!m) throw new Error(`unsupported path segment ${part}`);
-      const membersArr = node.members.slice();
-      const i = Number(m[1]);
-      membersArr[i] =
-        idx === parts.length - 1
-          ? { ...membersArr[i], members }
-          : setIn(membersArr[i], idx + 1);
-      return { ...node, members: membersArr };
-    };
-    return setIn(tree, 1);
-  }
 
   // ---- actions ----------------------------------------------------------------
 
@@ -460,7 +451,11 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       if (!ok) return;
       wrap = true;
     }
-    if (commit((c) => setRoot(c, path, { wrap }), "promote"))
+    if (
+      commit((c) => setRoot(c, path, { wrap }), "promote", {
+        posHints: wrap ? { [path]: "tree" } : undefined,
+      })
+    )
       selection = "tree";
     renderAll();
   };
@@ -483,27 +478,29 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     renderAll();
   };
 
-  const openQuickAdd = (nodePath, point) => {
-    const menu = menuAt(point, canvas);
-    menu.appendChild(
-      menuItem("New concat pool containing this", () => {
-        commit((c) => {
-          const parent = parentPathOf(nodePath);
-          const slot = Number(/members\[(\d+)\]$/.exec(nodePath)[1]);
-          let next = moveMember(c, nodePath, parent, slot + 1);
-          next = addPool(next, { strategy: "concat", parentPath: parent, slotIndex: slot + 1 });
-          return next;
-        }, "wrap in pool");
-        renderAll();
-      }),
-    );
-    menu.appendChild(
-      menuItem("Cut the link (delete this node)", () => {
-        commit((c) => removeNode(c, nodePath), "delete");
-        renderAll();
-      }),
-    );
-    menu.appendChild(menuItem("Cancel", () => {}));
+  // Wrap `id` in a fresh concat pool that takes its place as a sibling.
+  const wrapInPool = (id) => {
+    if (!id || id === "tree" || id === SCENARIO_ID) {
+      toast("select a pool first", "bad");
+      return;
+    }
+    const parent = parentPathOf(id);
+    const slot = Number(/members\[(\d+)\]$/.exec(id)[1]);
+    commit((c) => {
+      // insert the wrapper at the node's own slot (which pushes the node one slot right), then move
+      // the node inside the wrapper, so the wrapper takes the node's place in the tree
+      const withWrapper = addPool(c, {
+        strategy: "concat",
+        parentPath: parent,
+        slotIndex: slot,
+      });
+      return moveMember(
+        withWrapper,
+        `${parent}.members[${slot + 1}]`,
+        `${parent}.members[${slot}]`,
+      );
+    }, "wrap in pool");
+    renderAll();
   };
 
   const openContextMenu = (e, id) => {
@@ -533,6 +530,8 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
         renderAll();
       }),
     );
+    if (!isRoot)
+      menu.appendChild(menuItem("Wrap in a new pool", () => wrapInPool(id)));
     menu.appendChild(
       menuItem("Copy config JSON", () => {
         const json = JSON.stringify(cfg, null, 2);
@@ -838,18 +837,24 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       const cfg = store.get();
       const path = selection;
       const pcfg = previewConfig(cfg, path);
-      const { ok, result } = safeEvaluate(pcfg, { stateBudget: 20000, points: 25 });
+      const { ok, result, error } = safeEvaluate(pcfg, {
+        stateBudget: 20000,
+        points: 25,
+      });
       const box = [...canvas.querySelectorAll(".node")].find(
         (n) => n.dataset.id === path,
       );
       const block = box && box.querySelector(".nodepreview");
       if (!block) return;
       if (!ok) {
-        renderPreviewBlock(block, { error: lastError || "unsupported subtree" });
+        renderPreviewBlock(block, { error: error || "unsupported subtree" });
+        if (canvas.__reflow) canvas.__reflow();
         return;
       }
       const p = cardResult(result);
       renderPreviewBlock(block, p);
+      // the block just changed the card's height, so the layout must catch up
+      if (canvas.__reflow) canvas.__reflow();
     }, 300);
   };
 
@@ -876,6 +881,12 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     menu.style.left = `${fixed ? point.x : point.x - h.left}px`;
     menu.style.top = `${fixed ? point.y : point.y - h.top}px`;
     host.appendChild(menu);
+    // keep the menu inside the window: a menu opened near an edge would otherwise be unclickable
+    const r = menu.getBoundingClientRect();
+    const overX = r.right - (window.innerWidth - 6);
+    const overY = r.bottom - (window.innerHeight - 6);
+    if (overX > 0) menu.style.left = `${parseFloat(menu.style.left) - overX}px`;
+    if (overY > 0) menu.style.top = `${parseFloat(menu.style.top) - overY}px`;
     const close = (ev) => {
       if (menu.contains(ev.target)) return;
       menu.remove();
@@ -991,6 +1002,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     { label: "Scenario settings", run: () => { selection = SCENARIO_ID; renderAll(); } },
     { label: "Set selection as top-level", run: () => promote(selection) },
     { label: "Delete selection", hint: "Del", run: () => deleteSelection(selection) },
+    { label: "Wrap selection in a new pool", run: () => wrapInPool(selection) },
     { label: "Undo", hint: "Ctrl+Z", run: () => { if (store.undo()) renderAll(); } },
     { label: "Redo", hint: "Ctrl+Shift+Z", run: () => { if (store.redo()) renderAll(); } },
     { label: "Export config", run: () => downloadConfig(store.get()) },
@@ -1025,6 +1037,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       return;
     }
     if (e.key === "Escape") {
+      if (canvas.__dragActive && canvas.__dragActive()) return; // the canvas aborts its own gesture
       if (document.querySelector(".modal")) document.querySelector(".modal").remove();
       else if (selWire) {
         selWire = null;
