@@ -71,7 +71,9 @@ hovering instead of surfacing as a failure after release.
 ## 5. Results — ribbon, drawer, previews
 
 - **Root card ribbon** (the single home for top-level results): E[lost]@T, P(any loss)@T, usable,
-  rebuild slowdown, and a sparkline of E[lost](t). Click → opens the results drawer.
+  rebuild slowdown, and a sparkline of E[lost](t). Click → opens the results drawer. Any config edit
+  marks the ribbon **stale** ("config changed since this run — press R") but keeps the last run's
+  numbers: blanking the primary readout on every keystroke would be worse than showing it flagged.
 - **Results drawer** (bottom of the canvas, toggled from the ribbon, the header, or `G`): both charts at
   reading size — E[lost](t) on a **log y-axis**, P(any loss)(t) **linear 0–1** — for mode 1 (and mode 2
   side by side), plus the full metric list. Comparison overlays for pinned configs and optimizer top-3
@@ -110,7 +112,8 @@ infeasible workload) with an explanatory tooltip; the last good curves stay visi
 
 `Ctrl+K` opens a fuzzy command palette: add disk model, add pool, tidy, fit, set as top-level, wrap in
 a new pool, run, auto-optimize, open results, scenario, export/import, undo/redo, delete selection.
-`?` opens the shortcut sheet. Keyboard: `Ctrl+Z`/`Ctrl+Shift+Z` undo/redo, `Del` delete selection,
+`?` opens the shortcut sheet. Keyboard: `Ctrl+Z`/`Ctrl+Shift+Z` undo/redo (a form field with uncommitted
+text keeps native undo; a clean field lets the app-level undo through), `Del` delete selection,
 `R` run, `T` tidy, `F` fit, `0` reset view, `G` results drawer, `Esc` cancel a drag, `Space`+drag pan.
 
 Promoting a pool whose old root had other members asks once before nesting the old root under it, so no

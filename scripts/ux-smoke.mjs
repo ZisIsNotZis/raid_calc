@@ -443,6 +443,71 @@ await step("middle-drag pans without moving a card", async () => {
   };
 });
 
+await step("a config edit keeps the last run, flagged stale", async () => {
+  await page.locator('[data-id="tree"] .hd').click();
+  const f = page.locator(".props .field", { hasText: "λ common-cause" }).locator("input");
+  await f.fill("0.001");
+  await f.press("Enter");
+  await page.keyboard.press("t"); // force a full canvas re-render
+  const cells = await page.locator(".node.root .rb-v").count();
+  const stale = await page.locator(".node.root .rb-stale").count();
+  return { ok: cells === 4 && stale === 1, detail: `${cells} metrics, ${stale} stale marker` };
+});
+
+await step("one Enter is one undo step", async () => {
+  await page.locator('[data-id="tree"] .hd').click();
+  const f = page.locator(".props .field", { hasText: "λ common-cause" }).locator("input");
+  const before = (await state()).tree.lambdaCC;
+  const cand = before === 0.002 ? 0.003 : 0.002;
+  await f.fill(String(cand));
+  await f.press("Enter");
+  await page.keyboard.press("Control+z");
+  const after = (await state()).tree.lambdaCC;
+  return { ok: after === before, detail: `${before} → ${cand} → undo → ${after}` };
+});
+
+await step("clicking empty canvas clears a selected wire", async () => {
+  const pt = await wirePoint();
+  if (!pt.ok) return { ok: false, detail: `no reachable point on the wire (${pt.under})` };
+  await page.mouse.click(pt.x, pt.y);
+  const selected = await page.locator(".wire.sel").count();
+  const cv = await box(".canvas");
+  await page.mouse.click(cv.x + cv.width - 40, cv.y + 60);
+  const after = await page.locator(".wire.sel").count();
+  return { ok: selected === 1 && after === 0, detail: `wire sel ${selected} → ${after}` };
+});
+
+await step("deleting an ancestor of the selection is handled", async () => {
+  const errors0 = errors.length;
+  // build a depth-2 card first: wrap the first member in a new pool
+  const firstChild = await page.evaluate(
+    () => [...document.querySelectorAll(".node")].find((n) => !n.classList.contains("root"))?.dataset.id,
+  );
+  await page.locator(`[data-id="${firstChild}"] .hd`).click();
+  await page.keyboard.press("Control+k");
+  await page.waitForSelector(".palette-modal", { timeout: 3000 });
+  await page.locator(".palette-input").fill("wrap");
+  await page.locator(".palette-input").press("Enter");
+  const deep = await page.evaluate(
+    () =>
+      [...document.querySelectorAll(".node")]
+        .map((n) => n.dataset.id)
+        .filter((id) => (id.match(/\.members\[/g) || []).length >= 2)[0],
+  );
+  if (!deep)
+    return { ok: false, detail: "no depth-2 card to select" };
+  await page.locator(`[data-id="${deep}"] .hd`).click();
+  await page.mouse.move(5, 500);
+  await page.waitForTimeout(400);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-id="tree"]');
+    const rm = root.querySelector(".chip.pool .rm");
+    if (rm) rm.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  });
+  await page.waitForTimeout(700);
+  return { ok: errors.length === errors0, detail: errors.slice(errors0).join(" | ") || "no errors" };
+});
+
 await step("the properties panel refreshes after a structural edit", async () => {
   await page.locator('[data-id="tree"] .hd').click();
   const rowsBefore = await page.locator(".props .member-row").count();

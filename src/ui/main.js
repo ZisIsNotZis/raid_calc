@@ -184,6 +184,15 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       const withUi = { ...next, ui: { ...(next.ui || before.ui || {}), pos: after } };
       store.set(() => withUi);
       setRunError(msg);
+      // a structural edit can delete the selected node (or an ancestor of it): a dangling path
+      // would later throw inside previewConfig, outside the guarded evaluator
+      if (
+        selection &&
+        selection !== SCENARIO_ID &&
+        !resolvePath(store.get(), selection)
+      )
+        selection = "tree";
+      markResultStale();
       void label;
       return true;
     } catch (err) {
@@ -194,6 +203,15 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   };
 
   const uiOf = () => store.get().ui || {};
+
+  // Any config edit invalidates the last Run. The root ribbon keeps showing it, flagged, until the
+  // user runs again — deleting it outright would blank the primary readout on every edit.
+  let runStale = false;
+  const markResultStale = () => {
+    if (!lastResult || runStale) return;
+    runStale = true;
+    cardResults.set("tree", { ...cardResult(lastResult), stale: true });
+  };
 
   const commitUi = (mutator, { recordHistory = false, render = true } = {}) => {
     const nextUi = mutator(store.get().ui || {});
@@ -224,6 +242,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       return false;
     }
     lastResult = result;
+    runStale = false;
     setRunError(null);
     cardResults.set("tree", cardResult(result));
     renderAll();
@@ -315,10 +334,16 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   const canvasActions = () => ({
         onSelect: (id) => {
           const previous = selection;
-          if (previous === id) return;
+          const wireWasSelected = !!selWire;
+          if (previous === id && !wireWasSelected) return;
           selection = id;
           selWire = null;
-          if (previous && previous !== "tree") cardResults.delete(previous);
+          if (previous && previous !== id && previous !== "tree")
+            cardResults.delete(previous);
+          if (wireWasSelected && previous === id) {
+            renderAll(); // the wire highlight only exists in the rendered DOM
+            return;
+          }
           // Selection must not rebuild the canvas: replacing the card DOM on pointerup swallows the
           // second click of a double-click, which is how a value gets edited in place.
           if (canvas.__setSelection) canvas.__setSelection(id);
@@ -401,8 +426,8 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       if (ok) {
         renderCanvasOnly();
         renderSidebar(store.get());
-        // the config changed, so the standalone preview is stale
-        cardResults.delete(selection);
+        // the config changed, so the standalone preview is stale (the root ribbon is kept, flagged)
+        if (selection !== "tree") cardResults.delete(selection);
         schedulePreview();
       }
       return ok;
@@ -415,7 +440,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
         renderCanvasOnly();
         renderSidebar(store.get());
         renderProps(props, propsArgs());
-        cardResults.delete(selection);
+        if (selection !== "tree") cardResults.delete(selection);
         schedulePreview();
       }
       return ok;
@@ -851,7 +876,12 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       if (!selection || selection === "tree" || selection === SCENARIO_ID) return;
       const cfg = store.get();
       const path = selection;
-      const pcfg = previewConfig(cfg, path);
+      let pcfg;
+      try {
+        pcfg = previewConfig(cfg, path);
+      } catch {
+        return; // the selection no longer resolves (deleted between the click and the timer)
+      }
       const { ok, result, error } = safeEvaluate(pcfg, {
         stateBudget: 20000,
         points: 25,
@@ -1027,7 +1057,11 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       openPalette({ host: rootEl, commands: commands() });
       return;
     }
-    if (isTyping(e.target)) return;
+    // A clean form field (nothing typed since the last commit) must not swallow Ctrl+Z: the user's
+    // last committed edit is the app-level action they mean to undo.
+    const cleanInput =
+      e.target && e.target.tagName === "INPUT" && e.target.dataset.dirty !== "1";
+    if (isTyping(e.target) && !cleanInput) return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
       e.preventDefault();
       if (e.shiftKey) {

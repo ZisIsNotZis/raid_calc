@@ -643,6 +643,11 @@ export function renderCanvas({
         }
         rib.appendChild(grid);
         if (r.series) rib.appendChild(sparkSvg(r.series, 168, 32));
+        if (r.stale) {
+          const stale = el("div", "config changed since this run — press R");
+          stale.className = "rb-stale";
+          rib.appendChild(stale);
+        }
       } else {
         rib.appendChild(el("div", "no run yet — press R"));
       }
@@ -803,6 +808,7 @@ export function renderCanvas({
   }
 
   minimap.addEventListener("pointerdown", (e) => {
+    e.stopPropagation(); // otherwise the canvas treats it as a click on empty space and deselects
     const scale = Number(minimap.dataset.scale) || 1;
     const x0 = Number(minimap.dataset.originX) || 0;
     const y0 = Number(minimap.dataset.originY) || 0;
@@ -1024,6 +1030,7 @@ export function renderCanvas({
       c.style.left = `${nx}px`;
       c.style.top = `${ny}px`;
       drawEdges();
+      placePopover();
       clearTargetStyles();
       const targetId = cardUnder(e.clientX, e.clientY);
       gesture.target = null;

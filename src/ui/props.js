@@ -132,7 +132,11 @@ export function renderProps(
       u.className = "unit";
       wrap.appendChild(u);
     }
+    let lastCommitted = input.value;
     const apply = () => {
+      // Chrome fires keydown(Enter) *and* change for the same edit; committing twice would cost two
+      // undo steps for one field
+      if (input.value === lastCommitted) return;
       let value;
       try {
         value = parse(input.value);
@@ -145,9 +149,15 @@ export function renderProps(
         return;
       }
       clearInvalid(input, errorBox);
+      lastCommitted = input.value;
+      input.dataset.dirty = "";
       const ok = onSet((cfg) => setField(cfg, info, key, value), label);
       if (!ok) markInvalid(input, errorBox, "edit rejected — check the full config");
     };
+    input.addEventListener("input", () => {
+      // a dirty field keeps native undo inside itself; a clean one lets Ctrl+Z reach the app
+      input.dataset.dirty = input.value === lastCommitted ? "" : "1";
+    });
     input.addEventListener("change", apply);
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") apply();
