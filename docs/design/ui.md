@@ -57,7 +57,8 @@ Nothing is duplicated across regions. Top-level results have exactly one home (�
 | Release a link drag on empty canvas | Cuts the link (the card leaves the tree) |
 | Release any drag on an *illegal* target | Reverts to where the gesture started, and the reason stays on screen — nothing is parked on top of the target |
 | Click a wire | Selects it (highlight); `Del` removes it |
-| Hover a wire | ✕ button at the midpoint removes it |
+| Hover a wire, then click its ✕ | Removes that link (the button waits for the pointer to reach it) |
+| Middle-drag | Pans (never moves a card); right-drag opens the context menu |
 | Click a card | Select (properties panel); double-click a value on the card edits it in place |
 | `Esc` | Cancel an in-flight drag / close palette / deselect |
 | Drag a pool's **bottom port** (`in`) | Drop target only — the pool's member input; it holds many members, so it has no single link to grab |
@@ -77,12 +78,14 @@ hovering instead of surfacing as a failure after release.
   render here.
 - **Per-node standalone preview**: selecting a pool evaluates that subtree standalone (workload scaled by
   its share of top-level usable capacity) and shows three metrics (E[lost], P(any loss), rebuild
-  slowdown) plus a sparkline on the card, debounced 300 ms, with a reduced state budget so oversized
-  subtrees fail fast. The block is filled in place after the render and the canvas then re-measures card
-  heights and re-runs the layout — a card that grew after layout would otherwise sit on top of its own
-  wire. Evaluations run on the main thread with a small point count and state budget; a Worker is
-  deliberately **not** used (single-file bundle, no cross-origin worker) — v1's "computed in the worker"
-  was never built and is dropped here rather than restated.
+  slowdown) plus a sparkline in a **popover anchored under the selected card**, debounced 300 ms, with a
+  reduced state budget so oversized subtrees fail fast; an invalid or oversized subtree says so in the
+  popover instead of leaving it blank. The popover is deliberately *outside* the card: a card that grew
+  after layout would move under the cursor (breaking the second click of a double-click) and could cover
+  its own wire. It is `pointer-events:none`, so it can never intercept a gesture. Evaluations run on the
+  main thread with a small point count and state budget; a Worker is deliberately **not** used
+  (single-file bundle, no cross-origin worker) — v1's "computed in the worker" was never built and is
+  dropped here rather than restated.
 - **Drop preview** (the reason the canvas is an instrument, not a diagram): while hovering a legal drop
   target, a chip next to the cursor shows the metric deltas the drop would cause
   (`P 8.1% → 4.3%`, `E[lost] 1.2 → 0.4 TB`, `slowdown 3.1× → 1.4×`, `usable 40 → 36 TB`). Baseline and

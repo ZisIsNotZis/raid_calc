@@ -118,7 +118,8 @@
   .chip .x.rm:hover{color:var(--bad);}
   .chip.add{cursor:pointer; border-style:dashed;}
   .chip.add:hover{border-color:var(--accent); color:var(--accent);}
-  .nodepreview{margin-top:7px; border-top:1px dashed var(--line); padding-top:6px;}
+  .preview-pop{position:absolute; z-index:4; pointer-events:none; background:rgba(20,22,26,.94);
+    border:1px dashed var(--line); border-radius:8px; padding:7px 9px;}
   .np-row{display:flex; justify-content:space-between; gap:8px; font-size:11px;}
   .np-row b{color:var(--accent2);}
   .np-err{font-size:11px; color:var(--warn);}

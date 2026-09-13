@@ -389,11 +389,9 @@ export function sparkSvg(values, w, h) {
   return svg;
 }
 
-// Fill a card's standalone-preview block. Exported so main.js can refresh it in place (a full
-// re-render would clobber an in-progress properties-panel edit).
+// Fill the standalone-preview popover. Exported so main.js can refresh it in place.
 export function renderPreviewBlock(box, p) {
   box.innerHTML = "";
-  box.className = "nodepreview";
   if (!p) {
     box.appendChild(el("div", "preview…"));
     return;
@@ -529,6 +527,7 @@ export function renderCanvas({
   // card's height outside a render (the standalone-preview block arrives asynchronously), because a
   // grown card would otherwise sit on top of its own wire.
   const reflow = () => {
+    placePopover();
     let drifted = false;
     const live = new Set();
     for (const [id, c] of cards) {
@@ -550,29 +549,41 @@ export function renderCanvas({
   // Selection without a re-render: a rebuild here would swallow the second click of a double-click.
   const setSelectionInPlace = (next) => {
     selection = next;
-    for (const [id, c] of cards) {
-      c.el.classList.toggle("sel", id === next);
-      const old = c.el.querySelector(".nodepreview");
-      if (old) old.remove();
-    }
-    const c = cards.get(next);
-    if (c && !collapsed[next]) {
-      const bd = c.el.querySelector(".bd");
-      if (bd) {
-        const box = previewPlaceholder();
-        renderPreviewBlock(box, results.get(next));
-        bd.appendChild(box);
-      }
-    }
-    reflow();
+    for (const [id, c] of cards) c.el.classList.toggle("sel", id === next);
+    showPreview(next, results.get(next));
     drawMinimap();
   };
 
-  const previewPlaceholder = () => {
-    const box = el("div");
-    box.className = "nodepreview";
-    box.appendChild(el("div", "preview…"));
-    return box;
+  // The preview is a popover anchored under the selected card, NOT a block inside it: growing a card
+  // after layout would move it (breaking the second click of a double-click) and let it cover its own
+  // wire. It is pointer-events:none, so it can never block a gesture.
+  const popover = el("div");
+  popover.className = "preview-pop";
+  popover.hidden = true;
+  world.appendChild(popover);
+  let popId = null;
+
+  const placePopover = () => {
+    const c = popId ? cards.get(popId) : null;
+    const p = popId ? positions.get(popId) : null;
+    if (!c || !p || collapsed[popId]) {
+      popover.hidden = true;
+      return;
+    }
+    popover.hidden = false;
+    popover.style.left = `${p.x}px`;
+    popover.style.top = `${p.y + (c.el.offsetHeight || 140) + 10}px`;
+    popover.style.width = `${NODE_W}px`;
+  };
+
+  const showPreview = (id, p) => {
+    popId = id;
+    if (!id) {
+      popover.hidden = true;
+      return;
+    }
+    renderPreviewBlock(popover, p);
+    placePopover();
   };
 
   const drawCard = (id) => {
@@ -654,11 +665,6 @@ export function renderCanvas({
       bd.appendChild(kvRow(null, "strategy", strategyText));
       bd.appendChild(kvRow("lambdaCC", "λcc /h", expfmt(node.lambdaCC)));
       bd.appendChild(memberChips(id, node));
-      if (selection === id) {
-        const box = previewPlaceholder();
-        renderPreviewBlock(box, results.get(id));
-        bd.appendChild(box);
-      }
     }
     card.appendChild(bd);
 
@@ -677,6 +683,7 @@ export function renderCanvas({
     inn.title = "member input — drop a pool here";
     card.appendChild(inn);
 
+    card.dataset.baseTitle = card.title || "";
     world.appendChild(card);
     cards.set(id, { el: card });
   };
@@ -869,7 +876,10 @@ export function renderCanvas({
   };
 
   const clearTargetStyles = () => {
-    for (const c of cards.values()) c.el.classList.remove("drop-ok", "drop-bad");
+    for (const c of cards.values()) {
+      c.el.classList.remove("drop-ok", "drop-bad");
+      if (c.el.dataset.baseTitle) c.el.title = c.el.dataset.baseTitle;
+    }
   };
 
   const showChip = (clientX, clientY, delta) => {
@@ -903,12 +913,25 @@ export function renderCanvas({
     chip.hidden = true;
   };
 
+  let hoverCutTimer = null;
   const removeHoverCut = () => {
+    clearTimeout(hoverCutTimer);
     if (hoverCut) hoverCut.remove();
     hoverCut = null;
   };
+  // Removing the button the instant the pointer leaves the wire makes it impossible to click: the
+  // pointer must travel from the wire onto the button. Delay removal and let the button cancel it.
+  const scheduleHoverCutRemoval = () => {
+    clearTimeout(hoverCutTimer);
+    hoverCutTimer = setTimeout(() => removeHoverCut(), 220);
+  };
+  const cancelHoverCutRemoval = () => clearTimeout(hoverCutTimer);
 
   const addHoverCut = (childId, a, b) => {
+    if (hoverCut && hoverCut.dataset.child === childId) {
+      cancelHoverCutRemoval();
+      return;
+    }
     removeHoverCut();
     const bx = (a.x + b.x) / 2 + 10;
     const by = (a.y + b.y) / 2 - 9;
@@ -930,6 +953,9 @@ export function renderCanvas({
       ev.preventDefault();
       if (actions.onCutLink) actions.onCutLink(childId);
     });
+    g.addEventListener("pointerenter", cancelHoverCutRemoval);
+    g.addEventListener("pointerleave", scheduleHoverCutRemoval);
+    g.dataset.child = childId;
     edgeLayer.appendChild(g);
     hoverCut = g;
   };
@@ -1129,6 +1155,10 @@ export function renderCanvas({
   };
 
   const onPointerDown = (e) => {
+    // Only the primary button drives the canvas: middle-drag pans and right-drag opens the context
+    // menu, both handled by their own listeners.
+    if (e.button !== 0) return;
+    if (gesture) abortGesture(); // a second pointer (multitouch) must not hijack a live gesture
     // Wires are selected on pointerdown, not click: selecting on click would have to survive the
     // re-render that deselecting on empty canvas triggers between down and up, which moves the click
     // target to the canvas and loses the event entirely.
@@ -1205,6 +1235,10 @@ export function renderCanvas({
   container.__dragActive = () => !!gesture;
   container.__setSelection = setSelectionInPlace;
   container.__reflow = reflow;
+  container.__showPreview = (id, p) => {
+    if (id !== selection) return;
+    showPreview(id, p);
+  };
 
   const onContextMenuEvent = (e) => {
     const card = e.target.closest(".node");
@@ -1220,7 +1254,7 @@ export function renderCanvas({
     if (ed) addHoverCut(hit.dataset.child, ed.a, ed.b);
   });
   edgeLayer.addEventListener("pointerout", (e) => {
-    if (e.target.closest(".wire-hit")) removeHoverCut();
+    if (e.target.closest(".wire-hit")) scheduleHoverCutRemoval();
   });
   // space-drag pan
   const spacePanDown = (e) => {

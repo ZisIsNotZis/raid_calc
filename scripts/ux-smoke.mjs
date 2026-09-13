@@ -204,6 +204,34 @@ await step("a curve can be pinned as an overlay", async () => {
 });
 await page.keyboard.press("g");
 
+await step("the selected card shows a standalone preview popover that does not disturb layout", async () => {
+  await page.locator('[data-id="tree.members[0]"] .hd').click();
+  const cardBefore = await styleOf('[data-id="tree.members[0]"]');
+  let text = null;
+  for (let i = 0; i < 40 && text === null; i++) {
+    const st = await page.evaluate(() => {
+      const p = document.querySelector(".preview-pop");
+      if (!p || p.hidden || !document.querySelector(".preview-pop .np-row")) return null;
+      return p.textContent;
+    });
+    if (st === null) await page.waitForTimeout(250);
+    else text = st;
+  }
+  if (text === null)
+    return {
+      ok: false,
+      detail: `popover: ${await page.evaluate(() => {
+        const p = document.querySelector(".preview-pop");
+        return p ? `${p.hidden ? "hidden " : ""}${p.innerHTML.slice(0, 120) || "(empty)"}` : "missing";
+      })} · selection=${await page.evaluate(() => document.querySelector(".node.sel")?.dataset.id)}`,
+    };
+  const cardAfter = await styleOf('[data-id="tree.members[0]"]');
+  return {
+    ok: /E\[lost\]/.test(text) && cardBefore === cardAfter,
+    detail: `${text.replace(/\s+/g, " ").trim().slice(0, 60)} · card ${cardBefore} → ${cardAfter}`,
+  };
+});
+
 // --- free drag / tidy ---------------------------------------------------------------------------
 
 await step("cards are draggable and keep a free position", async () => {
@@ -307,11 +335,20 @@ await step("a properties edit is reflected on the cards", async () => {
   const shown = await page.locator('[data-id="tree"] .kv', { hasText: "λcc" }).first().textContent();
   return { ok: shown.includes("3.0e-3"), detail: shown.trim() };
 });
-await step("double-clicking a card value edits it in place", async () => {
-  await page.locator('[data-id="tree"] .kv[data-editable]').first().dblclick();
+await step("double-clicking an unselected card edits it in place without side effects", async () => {
+  const before = await state();
+  const target = '[data-id="tree.members[0]"] .kv[data-editable]';
+  const target0 = await box(target);
+  await page.mouse.click(target0.x + 40, target0.y + 6);
+  await page.keyboard.press("Escape");
+  await page.mouse.dblclick(target0.x + 40, target0.y + 6);
   const input = await page.locator(".node .kv input.inline").count();
+  const after = await state();
   if (input) await page.locator(".node .kv input.inline").first().press("Escape");
-  return { ok: input === 1, detail: `${input} inline editor(s)` };
+  return {
+    ok: input === 1 && JSON.stringify(after.kinds) === JSON.stringify(before.kinds),
+    detail: `${input} inline editor(s); kinds unchanged: ${JSON.stringify(after.kinds) === JSON.stringify(before.kinds)}`,
+  };
 });
 await step("a collapsed pool hides its whole subtree", async () => {
   const before = (await poolPaths()).length;
@@ -391,6 +428,61 @@ await page.mouse.move(10, 500);
 
 // --- viewport + chrome --------------------------------------------------------------------------
 
+await step("middle-drag pans without moving a card", async () => {
+  const before = await styleOf('[data-id="tree.members[0]"]');
+  const posBefore = JSON.stringify((await state()).ui.pos);
+  const c = await center('[data-id="tree.members[0]"] .hd');
+  await page.mouse.move(c.x, c.y);
+  await page.mouse.down({ button: "middle" });
+  await page.mouse.move(c.x + 60, c.y + 40);
+  await page.mouse.up({ button: "middle" });
+  const after = await styleOf('[data-id="tree.members[0]"]');
+  return {
+    ok: before === after && JSON.stringify((await state()).ui.pos) === posBefore,
+    detail: `${before} → ${after}`,
+  };
+});
+
+await step("the properties panel refreshes after a structural edit", async () => {
+  await page.locator('[data-id="tree"] .hd').click();
+  const rowsBefore = await page.locator(".props .member-row").count();
+  await page.locator(".props button", { hasText: "+ add pool member" }).click();
+  const rowsAfter = await page.locator(".props .member-row").count();
+  const cfgMembers = (await state()).tree.members.length;
+  return {
+    ok: rowsAfter === rowsBefore + 1 && cfgMembers === rowsAfter,
+    detail: `rows ${rowsBefore} → ${rowsAfter}, config has ${cfgMembers}`,
+  };
+});
+
+await step("editing two disk-model fields keeps both edits", async () => {
+  await page.locator(".lib-row").first().click();
+  const cap = page.locator(".props .field", { hasText: "Capacity (TB)" }).locator("input");
+  await cap.fill("16");
+  await cap.press("Enter");
+  const lam = page.locator(".props .field", { hasText: "λ base (/h)" }).locator("input");
+  await lam.fill("0.001");
+  await lam.press("Enter");
+  const k = (await state()).kinds.hdd8;
+  return {
+    ok: k.capacityTB === 16 && k.lambdaBase === 0.001,
+    detail: `capacity=${k.capacityTB}, lambdaBase=${k.lambdaBase}`,
+  };
+});
+
+await step("wrapping a non-pool selection is refused, not thrown", async () => {
+  const errors0 = errors.length;
+  await page.locator(".lib-row").first().click();
+  await page.keyboard.press("Control+k");
+  await page.waitForSelector(".palette-modal", { timeout: 3000 });
+  await page.locator(".palette-input").fill("wrap");
+  await page.locator(".palette-input").press("Enter");
+  return {
+    ok: errors.length === errors0 && (await page.locator(".toast").count()) >= 1,
+    detail: `${(await page.locator(".toast").first().textContent()) || "no toast"}`,
+  };
+});
+
 await step("wheel zooms the canvas", async () => {
   const z0 = await page.locator(".zoom-label").textContent();
   await page.locator(".canvas").hover();
@@ -427,20 +519,65 @@ await step("the scenario chip selects the scenario form", async () => {
   return { ok: (await page.locator(".props h3").textContent()) === "Scenario" };
 });
 await step("the context menu can wrap a pool in a new pool", async () => {
+  // the palette step left the results drawer open over the bottom of the canvas
+  if (await page.locator(".drawer").isVisible()) await page.keyboard.press("g");
   const before = await state();
-  const target = before.tree.members[0];
   const beforeCount = (await poolPaths()).length;
-  await page.locator('[data-id="tree.members[0]"] .hd').click({ button: "right" });
+  const anyChild = await page.evaluate(
+    () => [...document.querySelectorAll(".node")].find((n) => !n.classList.contains("root"))?.dataset.id,
+  );
+  if (!anyChild) return { ok: false, detail: "no non-root card on the canvas" };
+  const hdBox = await box(`[data-id="${anyChild}"] .hd`);
+  const underHd = await page.evaluate(([x, y]) => {
+    const e = document.elementFromPoint(x, y);
+    return e ? `${e.tagName}.${e.getAttribute("class")}` : "none";
+  }, [hdBox.x + hdBox.width / 2, hdBox.y + hdBox.height / 2]);
+  if (!underHd.includes("hd") && !underHd.includes("node"))
+    return { ok: false, detail: `card header covered by ${underHd} (drawer ${await page.locator(".drawer").isVisible()})` };
+  await page.mouse.click(hdBox.x + hdBox.width / 2, hdBox.y + hdBox.height / 2, { button: "right" });
   await page.waitForSelector(".menu", { timeout: 3000 });
-  await page.locator(".menu-item", { hasText: "Wrap in a new pool" }).click();
+  const childPath = anyChild;
+  const item = page.locator(".menu-item", { hasText: "Wrap in a new pool" });
+  if ((await item.count()) === 0)
+    return {
+      ok: false,
+      detail: `menu items: ${JSON.stringify(await page.locator(".menu-item").allTextContents())}`,
+    };
+  const d = await page.evaluate(() => {
+    const menu = document.querySelector(".menu");
+    const r = menu.getBoundingClientRect();
+    const it = [...menu.querySelectorAll(".menu-item")].find((b) =>
+      b.textContent.includes("Wrap in a new pool"),
+    );
+    const ir = it.getBoundingClientRect();
+    const e = document.elementFromPoint(ir.x + ir.width / 2, ir.y + ir.height / 2);
+    return {
+      menu: `${r.x | 0},${r.y | 0} ${r.width | 0}x${r.height | 0}`,
+      item: `${ir.x | 0},${ir.y | 0} ${ir.width | 0}x${ir.height | 0}`,
+      under: e ? `${e.tagName}.${e.getAttribute("class")}` : "none",
+      menus: document.querySelectorAll(".menu").length,
+    };
+  });
+  try {
+    await item.click({ timeout: 3000 });
+  } catch (e) {
+    return { ok: false, detail: `${JSON.stringify(d)} · ${String(e.message).split("\n")[0]}` };
+  }
   const after = await state();
-  const wrapper = after.tree.members[0];
+  const pools = [];
+  const walk = (n, path) => {
+    pools.push({ path, n });
+    (n.members || []).forEach((m, i) => m.node === "pool" && walk(m, `${path}.members[${i}]`));
+  };
+  walk(after.tree, "tree");
+  const wrapper = pools.find(
+    (p) => p.path === childPath && p.n.members.length === 1 && p.n.members[0].node === "pool",
+  );
   return {
-    ok:
-      (await poolPaths()).length === beforeCount + 1 &&
-      wrapper.members.length === 1 &&
-      wrapper.members[0].strategy === target.strategy,
-    detail: `wrapper members ${wrapper.members.length}, inner ${wrapper.members[0].strategy}`,
+    ok: (await poolPaths()).length === beforeCount + 1 && !!wrapper,
+    detail: wrapper
+      ? `wrapper at ${wrapper.path} holds 1 pool (${wrapper.n.members[0].strategy})`
+      : `no wrapper found around ${childPath}`,
   };
 });
 await screenshotLink(page, evidence, "ux-05-final.png");

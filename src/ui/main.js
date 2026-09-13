@@ -7,7 +7,6 @@
 import { createStore, downloadConfig, readConfigFile } from "./app.js";
 import {
   renderCanvas,
-  renderPreviewBlock,
   resolvePath,
   isPoolNode,
   parentPathOf,
@@ -402,6 +401,22 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       if (ok) {
         renderCanvasOnly();
         renderSidebar(store.get());
+        // the config changed, so the standalone preview is stale
+        cardResults.delete(selection);
+        schedulePreview();
+      }
+      return ok;
+    },
+    // A structural edit changes the shape of the form itself (member rows, strategy fields), so the
+    // panel is rebuilt on top of the canvas and sidebar refresh.
+    onStructural: (mutator, label) => {
+      const ok = commit(mutator, label);
+      if (ok) {
+        renderCanvasOnly();
+        renderSidebar(store.get());
+        renderProps(props, propsArgs());
+        cardResults.delete(selection);
+        schedulePreview();
       }
       return ok;
     },
@@ -464,8 +479,8 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     if (!path || path === SCENARIO_ID) return;
     if (path.startsWith("kinds.")) {
       const id = path.slice(6);
-      commit((c) => removeKind(c, id), "delete disk model");
-      if (selection === path) selection = "tree";
+      if (commit((c) => removeKind(c, id), "delete disk model") && selection === path)
+        selection = "tree";
       renderAll();
       return;
     }
@@ -473,15 +488,15 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       toast("the root cannot be deleted — promote another pool first", "bad");
       return;
     }
-    commit((c) => removeNode(c, path), "delete pool");
-    if (selection === path) selection = "tree";
+    if (commit((c) => removeNode(c, path), "delete pool") && selection === path)
+      selection = "tree";
     renderAll();
   };
 
   // Wrap `id` in a fresh concat pool that takes its place as a sibling.
   const wrapInPool = (id) => {
-    if (!id || id === "tree" || id === SCENARIO_ID) {
-      toast("select a pool first", "bad");
+    if (!id || !/\.members\[\d+\]$/.test(id) || id === "tree" || id === SCENARIO_ID) {
+      toast("select a pool that already sits inside another pool", "bad");
       return;
     }
     const parent = parentPathOf(id);
@@ -841,20 +856,14 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
         stateBudget: 20000,
         points: 25,
       });
-      const box = [...canvas.querySelectorAll(".node")].find(
-        (n) => n.dataset.id === path,
-      );
-      const block = box && box.querySelector(".nodepreview");
-      if (!block) return;
       if (!ok) {
-        renderPreviewBlock(block, { error: error || "unsupported subtree" });
-        if (canvas.__reflow) canvas.__reflow();
+        if (canvas.__showPreview)
+          canvas.__showPreview(path, { error: error || "unsupported subtree" });
         return;
       }
       const p = cardResult(result);
-      renderPreviewBlock(block, p);
-      // the block just changed the card's height, so the layout must catch up
-      if (canvas.__reflow) canvas.__reflow();
+      cardResults.set(path, p);
+      if (canvas.__showPreview) canvas.__showPreview(path, p);
     }, 300);
   };
 

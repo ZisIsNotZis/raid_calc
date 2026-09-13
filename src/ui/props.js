@@ -39,7 +39,7 @@ function selectedNodeInfo(config, selection) {
 
 export function renderProps(
   root,
-  { config, selection, onSet, onPromote, onDelete, previewNote },
+  { config, selection, onSet, onStructural, onPromote, onDelete, previewNote },
 ) {
   root.innerHTML = "";
   const info = selectedNodeInfo(config, selection);
@@ -177,7 +177,7 @@ export function renderProps(
   if (info.type === "pool") {
     root.appendChild(
       select("Strategy", Object.entries(STRATEGY_LABELS), info.node.strategy, (s) =>
-        onSet((cfg) => switchStrategy(cfg, info.path, s), "strategy"),
+        onStructural((cfg) => switchStrategy(cfg, info.path, s), "strategy"),
       ),
     );
     if (info.node.strategy === "strip")
@@ -202,10 +202,10 @@ export function renderProps(
         el("span", isKindNode(m) ? `${m.count}× ${m.kind}` : `${m.strategy} pool`),
       );
       const up = tiny("↑", () =>
-        onSet((cfg) => reorderMember(cfg, info.path, i, -1), "reorder"),
+        onStructural((cfg) => reorderMember(cfg, info.path, i, -1), "reorder"),
       );
       const down = tiny("↓", () =>
-        onSet((cfg) => reorderMember(cfg, info.path, i, 1), "reorder"),
+        onStructural((cfg) => reorderMember(cfg, info.path, i, 1), "reorder"),
       );
       up.disabled = i === 0;
       down.disabled = i === info.node.members.length - 1;
@@ -214,7 +214,7 @@ export function renderProps(
       if (isKindNode(m)) {
         row.appendChild(
           tiny("+1", () =>
-            onSet(
+            onStructural(
               (cfg) => setMemberCount(cfg, info.path, i, (m.count ?? 1) + 1),
               "member +1",
             ),
@@ -224,7 +224,11 @@ export function renderProps(
       row.appendChild(
         tiny(
           "✕",
-          () => onSet((cfg) => removeNode(cfg, `${info.path}.members[${i}]`), "remove member"),
+          () =>
+            onStructural(
+              (cfg) => removeNode(cfg, `${info.path}.members[${i}]`),
+              "remove member",
+            ),
           "danger",
         ),
       );
@@ -233,7 +237,10 @@ export function renderProps(
     root.appendChild(list);
     root.appendChild(
       tiny("+ add pool member", () =>
-        onSet((cfg) => addPool(cfg, { strategy: "concat", parentPath: info.path }), "add member"),
+        onStructural(
+          (cfg) => addPool(cfg, { strategy: "concat", parentPath: info.path }),
+          "add member",
+        ),
       ),
     );
 
@@ -367,13 +374,9 @@ const keyCtx = {
 // address config.global / config.workload.
 function setField(cfg, info, key, value) {
   if (info.type === "kind") {
-    return {
-      ...cfg,
-      kinds: {
-        ...cfg.kinds,
-        [info.path.slice(6)]: { ...info.node, [key]: value },
-      },
-    };
+    const id = info.path.slice(6);
+    const current = resolvePath(cfg, info.path);
+    return { ...cfg, kinds: { ...cfg.kinds, [id]: { ...current, [key]: value } } };
   }
   if (info.type === "pool") {
     const node = resolvePath(cfg, info.path);
