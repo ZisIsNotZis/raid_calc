@@ -1,6 +1,6 @@
 # Ticket: 15-canvas-polish
 
-- **Status:** claimed
+- **Status:** done
 - **Need-review:** yes (behavior changes)
 - **Need-test-cases:** yes
 
@@ -38,3 +38,24 @@ Design refs: docs/design/ui.md (§1, §3, §4, §5 — updated in this ticket), 
 - 2026-09-13 agent (pi, deepseek-v4): created from the user's six-item list. Item 4 was verified against
   rendered pixels first (all cards already have identical 10px corners), which rules out "rounded
   corners" and confirms "curve" = the per-node result curve.
+
+## Comments (implementation + closure)
+
+- 2026-09-13 agent (pi, deepseek-v4): implemented (b7333c2 feature + review fixes), merged to master as
+  the merge commit below; ticket done and lock released by that merge.
+- 2026-09-13 agent: two adversarial review rounds, each finding blocking defects; all fixed with a
+  smoke check per fix. The sharpest ones:
+  - creating a pool appended to whatever pool was under the pointer, and `strip`/`split` pools accept an
+    EXACT member count — the default sample's root is `strip(1,1)`, so every create invalidated the whole
+    config. Creation now walks to the nearest ancestor that is a `concat` pool, or nests the new pool
+    beside the nearest *pool* member by wrapping it (never a kind-ref member: one entry stands for
+    `count` slots).
+  - dragging out of the sidebar started a native HTML5 text drag, which cancels the pointer sequence:
+    no `pointerup`, no drop, ghost leaked. This is the same user-reported class as AC1, one layer down.
+  - a cancelled space-drag leaked `panCount`, permanently disabling the per-node curve pass.
+  - seeding a disk without checking inventory created an invalid config.
+  - the per-pool pass rebuilt the canvas and discarded the selected card's preview popover.
+- 2026-09-13 agent: verification — vitest 111 passed (69 UI); `npm run build` green; `npm run smoke`
+  52/52 with zero console/page errors; evidence `ux-01..05` (initial, run+drawer, re-parented, link drag,
+  final) plus `ux-06-light-zh` and `ux-08-dark-with-curves`, all written by the suite so none can go
+  stale silently.
