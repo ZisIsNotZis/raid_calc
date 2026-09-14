@@ -682,3 +682,95 @@ describe("canvas: root-level edits and promotion plan (regressions)", () => {
     expect(re["tree.members[0]"]).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// ticket 15: per-node curves, i18n, and the checks that were silent failures
+// ---------------------------------------------------------------------------------------------
+
+import { previewConfig } from "../src/ui/results.js";
+import { makeT, LANGS, THEMES, applyTheme } from "../src/ui/i18n.js";
+import { TB, usableBytesOf } from "../src/core/config.js";
+
+describe("previewConfig scales the workload to the subtree", () => {
+  const usableTB = (tree, kinds) => usableBytesOf(tree, kinds) / TB;
+
+  it("keeps the demand inside the subtree's own usable capacity", () => {
+    const cfg = nestedConfig();
+    const p = previewConfig(cfg, "tree.members[0]");
+    // strip(3,1) over 4×8TB = 24 TB usable out of 25 TB total → 96% of the 10 TB demand
+    expect(usableTB(p.tree, p.kinds)).toBeCloseTo(24, 6);
+    expect(p.workload.storeTB).toBeLessThanOrEqual(usableTB(p.tree, p.kinds));
+    expect(p.workload.storeTB).toBeGreaterThan(0);
+  });
+
+  it("scales a tiny subtree down so it stays valid (and previewable at all)", () => {
+    const cfg = nestedConfig();
+    cfg.workload.storeTB = 20;
+    const tiny = structuredClone(cfg);
+    tiny.tree = { ...cfg.tree, members: [{ node: "kind", kind: "ssd1", count: 1 }] };
+    const tp = previewConfig(tiny, "tree.members[0]");
+    expect(usableTB(tp.tree, tp.kinds)).toBeCloseTo(1, 6);
+    expect(tp.workload.storeTB).toBeLessThanOrEqual(1); // a 1 TB subtree cannot carry a 20 TB demand
+    expect(tp.workload.storeTB).toBeGreaterThan(0);
+  });
+
+  it("scales read/write by the same share", () => {
+    const cfg = nestedConfig();
+    cfg.workload.readBps = 200e6;
+    cfg.workload.writeBps = 50e6;
+    const p = previewConfig(cfg, "tree.members[0]");
+    expect(p.workload.readBps).toBeLessThanOrEqual(200e6);
+    expect(p.workload.readBps).toBeGreaterThan(0);
+    expect(p.workload.readBps / p.workload.writeBps).toBeCloseTo(4);
+  });
+
+  it("never mutates the source config", () => {
+    const cfg = nestedConfig();
+    previewConfig(cfg, "tree.members[0]");
+    expect(cfg.workload.storeTB).toBe(10);
+    expect(cfg.tree.node).toBe("pool");
+  });
+
+  it("previews a disk model as a single disk", () => {
+    const p = previewConfig(nestedConfig(), "kinds.hdd8");
+    expect(p.tree).toEqual({ node: "kind", kind: "hdd8", count: 1 });
+  });
+});
+
+describe("i18n", () => {
+  it("translates known strings and passes unknown ones through", () => {
+    const zh = makeT("zh");
+    expect(zh("Run")).toBe("运行");
+    expect(zh("something not translated")).toBe("something not translated");
+  });
+
+  it("substitutes placeholders", () => {
+    const zh = makeT("zh");
+    expect(zh("Pool · {path}", { path: "tree" })).toBe("存储池 · tree");
+  });
+
+  it("falls back to the key when a language has no dictionary", () => {
+    const xx = makeT("xx");
+    expect(xx("Run")).toBe("Run");
+  });
+
+  it("exposes the supported languages and themes", () => {
+    expect(LANGS).toEqual(["en", "zh"]);
+    expect(THEMES).toEqual(["dark", "light"]);
+  });
+
+  it("applyTheme resolves to a supported theme", () => {
+    expect(applyTheme("light")).toBe("light");
+    expect(applyTheme("nonsense")).toBe("dark");
+  });
+});
+
+describe("resolvePath tolerates an empty selection", () => {
+  it("returns undefined instead of throwing", () => {
+    expect(resolvePath(nestedConfig(), null)).toBeUndefined();
+    expect(resolvePath(nestedConfig(), "")).toBeUndefined();
+    expect(resolvePath(nestedConfig(), "tree.members[9]")).toBeUndefined();
+  });
+});
+
+void TB;

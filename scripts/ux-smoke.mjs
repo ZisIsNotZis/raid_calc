@@ -124,6 +124,20 @@ const cardRects = () =>
       .join(" | "),
   );
 
+// A point that is definitely on empty canvas (no card within 24px).
+const emptyPoint = () =>
+  page.evaluate(() => {
+    const rects = [...document.querySelectorAll(".node")].map((n) => n.getBoundingClientRect());
+    const cv = document.querySelector(".canvas").getBoundingClientRect();
+    for (let y = cv.y + 40; y < cv.bottom - 40; y += 40) {
+      for (let x = cv.right - 60; x > cv.x + 40; x -= 60) {
+        if (!rects.some((r) => x > r.x - 24 && x < r.right + 24 && y > r.y - 24 && y < r.bottom + 24))
+          return { x, y };
+      }
+    }
+    return null;
+  });
+
 // Record the check even if the interaction throws.
 const step = async (name, fn) => {
   try {
@@ -229,6 +243,21 @@ await step("the selected card shows a standalone preview popover that does not d
   return {
     ok: /E\[lost\]/.test(text) && cardBefore === cardAfter,
     detail: `${text.replace(/\s+/g, " ").trim().slice(0, 60)} · card ${cardBefore} → ${cardAfter}`,
+  };
+});
+
+await step("every pool card shows its own curve", async () => {
+  await page.waitForTimeout(900);
+  const cards = await poolPaths();
+  const withCurve = await page.evaluate(
+    () =>
+      [...document.querySelectorAll(".node:not(.root)")].filter((n) =>
+        n.querySelector(".node-curve svg path"),
+      ).length,
+  );
+  return {
+    ok: withCurve === cards.length - 1 && withCurve > 0,
+    detail: `${withCurve} of ${cards.length - 1} non-root cards have a curve`,
   };
 });
 
@@ -545,6 +574,134 @@ await step("wrapping a non-pool selection is refused, not thrown", async () => {
   return {
     ok: errors.length === errors0 && (await page.locator(".toast").count()) >= 1,
     detail: `${(await page.locator(".toast").first().textContent()) || "no toast"}`,
+  };
+});
+
+// ---- the six reported issues --------------------------------------------------------------------
+
+await step("no text gets selected while dragging a card", async () => {
+  await page.locator('body').click({ position: { x: 5, y: 5 } });
+  const sel = await page.evaluate(() => String(window.getSelection() || ""));
+  const c = await center('[data-id="tree.members[0]"] .hd');
+  await page.mouse.move(c.x, c.y);
+  await page.mouse.down();
+  await page.mouse.move(c.x + 60, c.y + 40);
+  await page.mouse.move(c.x + 130, c.y + 90);
+  const during = await page.evaluate(() => String(window.getSelection() || ""));
+  await page.mouse.up();
+  return { ok: sel === "" && during === "", detail: `selection during drag: "${during}"` };
+});
+
+await step("dragging empty canvas pans the view", async () => {
+  const z0 = await page.locator(".zoom-label").textContent();
+  const cardBefore = await styleOf('[data-id="tree.members[0]"]');
+  const cv = await box(".canvas");
+  const from = { x: cv.x + cv.width - 60, y: cv.y + 60 };
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(from.x - 120, from.y + 40);
+  await page.mouse.move(from.x - 200, from.y + 90);
+  await page.mouse.up();
+  const cardAfter = await styleOf('[data-id="tree.members[0]"]');
+  const moved = await page.evaluate(() => document.querySelector(".world").style.transform);
+  const z1 = await page.locator(".zoom-label").textContent();
+  return {
+    ok: cardBefore === cardAfter && z0 === z1 && /translate\(-?\d/.test(moved),
+    detail: `transform after pan: ${moved}, zoom ${z0} → ${z1}`,
+  };
+});
+
+await step("the canvas does not select text (user-select: none)", async () => {
+  const v = await page.evaluate(() => getComputedStyle(document.querySelector(".canvas")).userSelect);
+  return { ok: v === "none", detail: `user-select: ${v}` };
+});
+
+await step("dropping a disk on empty canvas creates a one-disk pool there", async () => {
+  const before = await poolPaths();
+  const cv = await box(".canvas");
+  const target = { x: cv.x + cv.width - 90, y: cv.y + cv.height - 120 };
+  await drag(await center(".lib-row"), target);
+  const after = await poolPaths();
+  const cfg = await state();
+  let seeded = null;
+  const walk = (n) => {
+    if (n.node === "pool" && n.members.length === 1 && n.members[0].node === "kind")
+      seeded = n;
+    (n.members || []).forEach((m) => m.node === "pool" && walk(m));
+  };
+  walk(cfg.tree);
+  const stored = Object.keys((await state()).ui.pos).length;
+  return {
+    ok: after.length === before.length + 1 && !!seeded && stored > 0,
+    detail: `${before.length} → ${after.length} pools, seeded=${!!seeded}, stored positions=${stored}`,
+  };
+});
+
+await step("double-clicking empty canvas creates a pool there", async () => {
+  const before = await poolPaths();
+  const target = await emptyPoint();
+  if (!target) return { ok: false, detail: "no empty canvas area found" };
+  await page.mouse.dblclick(target.x, target.y);
+  const after = await poolPaths();
+  return { ok: after.length === before.length + 1, detail: `${before.length} → ${after.length} pools` };
+});
+
+await step("releasing a link in empty space cancels instead of deleting", async () => {
+  await page.keyboard.press("f"); // make sure every card is on screen
+  await page.waitForTimeout(120);
+  const child = await page.evaluate(() => {
+    const cv = document.querySelector(".canvas").getBoundingClientRect();
+    const card = [...document.querySelectorAll(".node")].find((n) => {
+      if (n.classList.contains("root")) return false;
+      const r = n.getBoundingClientRect();
+      return (
+        r.x > cv.x + 20 &&
+        r.y > cv.y + 20 &&
+        r.right < cv.right - 20 &&
+        r.bottom < cv.bottom - 20
+      );
+    });
+    return card ? card.dataset.id : null;
+  });
+  if (!child) return { ok: false, detail: "no fully visible non-root card" };
+  const before = await poolPaths();
+  await page.evaluate(() => document.querySelectorAll(".toast").forEach((n) => n.remove()));
+  const p = await center(`[data-id="${child}"] .port.out`);
+  const target = await emptyPoint();
+  if (!target) return { ok: false, detail: "no empty canvas area found" };
+  await page.mouse.move(p.x, p.y);
+  await page.mouse.down();
+  await page.mouse.move(target.x, target.y);
+  await page.mouse.move(target.x + 2, target.y + 2);
+  await page.mouse.up();
+  const after = await poolPaths();
+  const toastText = await page.evaluate(() =>
+    [...document.querySelectorAll(".toast")].map((n) => n.textContent).join(" | "),
+  );
+  return {
+    ok: after.length === before.length && /kept/i.test(toastText),
+    detail: `${before.length} → ${after.length} pools · ${toastText.slice(0, 60)}`,
+  };
+});
+
+await step("the language selector switches the UI to Chinese", async () => {
+  await page.selectOption(".mini-select", { label: "中文" });
+  const run = await page.locator("header button", { hasText: "运行" }).count();
+  const tidy = await page.locator('button[data-act="tidy"]').textContent();
+  await page.selectOption(".mini-select", { label: "EN" });
+  const back = await page.locator("header button", { hasText: "Run" }).count();
+  return { ok: run === 1 && tidy === "整理" && back === 1, detail: `zh run=${run}, tidy=${tidy}, en run=${back}` };
+});
+
+await step("the theme selector switches to light and back", async () => {
+  await page.selectOption(".mini-select >> nth=1", { label: "☀" });
+  const light = await page.evaluate(() => document.documentElement.dataset.theme);
+  const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  await page.selectOption(".mini-select >> nth=1", { label: "🌙" });
+  const dark = await page.evaluate(() => document.documentElement.dataset.theme);
+  return {
+    ok: light === "light" && dark === "dark" && bg !== "rgb(20, 22, 26)",
+    detail: `${light} (${bg}) → ${dark}`,
   };
 });
 

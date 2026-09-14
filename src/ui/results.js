@@ -2,7 +2,7 @@
 import { evaluate } from "../core/evaluate.js";
 import { validate } from "../core/config.js";
 import { fmtBytes } from "./charts.js";
-import { TB, HOURS_PER_YEAR } from "../core/config.js";
+import { TB, HOURS_PER_YEAR, usableBytesOf } from "../core/config.js";
 
 export function runConfig(config, { points, stateBudget } = {}) {
   return evaluate(config, { points, stateBudget });
@@ -65,12 +65,27 @@ export function fmtSummary(summary) {
 // Debounced by the caller (raid-calc.md §3: the graph doubles as an understanding tool).
 export function previewConfig(config, path) {
   const preview = structuredClone(config);
-  if (path && path.startsWith("kinds.")) {
-    const id = path.slice(6);
-    preview.tree = { node: "kind", kind: id, count: 1 };
-  } else {
-    preview.tree = nodeAt(config.tree, path);
-  }
+  const subtree =
+    path && path.startsWith("kinds.")
+      ? { node: "kind", kind: path.slice(6), count: 1 }
+      : nodeAt(config.tree, path);
+  preview.tree = subtree;
+  // Scale the workload to the subtree's share of top-level usable capacity (ui.md §5). Without this
+  // a small subtree would fail validation outright ("storeTB exceeds usable capacity") and its curve
+  // would never render.
+  const totalUsable = usableBytesOf(config.tree, config.kinds) || 0;
+  const subUsable = usableBytesOf(subtree, config.kinds) || 0;
+  const share = totalUsable > 0 ? Math.min(1, subUsable / totalUsable) : 1;
+  const w = config.workload || {};
+  preview.workload = {
+    ...w,
+    storeTB: Math.max(
+      1e-6,
+      Math.min((w.storeTB || 0) * share, (subUsable / TB) * 0.999),
+    ),
+    readBps: (w.readBps || 0) * share,
+    writeBps: (w.writeBps || 0) * share,
+  };
   return preview;
 }
 

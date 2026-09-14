@@ -44,6 +44,7 @@ export function walkPools(node, path, cb) {
 
 // Resolve a path into the config. Returns undefined if not found.
 export function resolvePath(config, path) {
+  if (!path || !config) return undefined;
   if (path.startsWith("kinds.")) return config.kinds[path.slice(6)];
   return path.split(".").reduce((acc, part) => {
     if (acc === undefined || acc === null) return undefined;
@@ -390,14 +391,19 @@ export function sparkSvg(values, w, h) {
 }
 
 // Fill the standalone-preview popover. Exported so main.js can refresh it in place.
+let previewText = (x) => x;
+export function setPreviewTranslator(fn) {
+  previewText = fn;
+}
+
 export function renderPreviewBlock(box, p) {
   box.innerHTML = "";
   if (!p) {
-    box.appendChild(el("div", "preview…"));
+    box.appendChild(el("div", previewText("preview…")));
     return;
   }
   if (p.error) {
-    const n = el("div", `preview unavailable: ${p.error}`);
+    const n = el("div", previewText("preview unavailable: {why}", { why: p.error }));
     n.className = "np-err";
     box.appendChild(n);
     return;
@@ -425,6 +431,7 @@ export function renderCanvas({
   results = new Map(),
   heights = new Map(),
   actions = {},
+  t = (x, vars) => String(x).replace(/\{(\w+)\}/g, (m, k) => (vars && k in vars ? vars[k] : m)),
 }) {
   const pos = ui.pos || {};
   const collapsed = ui.collapsed || {};
@@ -506,7 +513,7 @@ export function renderCanvas({
       const x = el("button", "✕");
       x.type = "button";
       x.className = "x rm";
-      x.title = "remove member";
+      x.title = t("remove member");
       x.dataset.act = "remove";
       x.dataset.path = id;
       x.dataset.slot = String(i);
@@ -516,7 +523,7 @@ export function renderCanvas({
     const add = el("span");
     add.className = "chip add";
     add.textContent = "+";
-    add.title = "add a member (or drop a disk model from the library here)";
+    add.title = t("add a member (or drop a disk model from the library here)");
     add.dataset.act = "addmember";
     add.dataset.path = id;
     wrap.appendChild(add);
@@ -603,7 +610,7 @@ export function renderCanvas({
     chev.className = "chev";
     chev.dataset.act = "collapse";
     chev.dataset.path = id;
-    chev.title = isCollapsed ? "expand" : "collapse";
+    chev.title = isCollapsed ? t("expand") : t("collapse");
     hd.appendChild(chev);
     const dot = el("span");
     dot.className = "dot";
@@ -621,7 +628,7 @@ export function renderCanvas({
       const rib = el("div");
       rib.className = "ribbon" + (r ? "" : " muted");
       rib.dataset.act = "results";
-      rib.title = "click for the full results drawer";
+      rib.title = t("click for the full results drawer");
       if (r) {
         const grid = el("div");
         grid.className = "rb-grid";
@@ -644,12 +651,12 @@ export function renderCanvas({
         rib.appendChild(grid);
         if (r.series) rib.appendChild(sparkSvg(r.series, 168, 32));
         if (r.stale) {
-          const stale = el("div", "config changed since this run — press R");
+          const stale = el("div", t("config changed since this run — press R"));
           stale.className = "rb-stale";
           rib.appendChild(stale);
         }
       } else {
-        rib.appendChild(el("div", "no run yet — press R"));
+        rib.appendChild(el("div", t("no run yet — press R")));
       }
       card.appendChild(rib);
     }
@@ -658,7 +665,7 @@ export function renderCanvas({
     bd.className = "bd";
     if (isCollapsed) {
       bd.appendChild(
-        kvRow(null, "members", `${(node.members || []).length} hidden`),
+        kvRow(null, t("members"), `${(node.members || []).length} ${t("hidden")}`),
       );
     } else {
       const strategyText =
@@ -667,9 +674,26 @@ export function renderCanvas({
           : node.strategy === "split" || node.strategy === "strip-split"
             ? `${node.strategy} ${node.n ?? 1}+${node.m ?? 0}`
             : "concat";
-      bd.appendChild(kvRow(null, "strategy", strategyText));
+      bd.appendChild(kvRow(null, t("strategy"), strategyText));
       bd.appendChild(kvRow("lambdaCC", "λcc /h", expfmt(node.lambdaCC)));
       bd.appendChild(memberChips(id, node));
+      // every pool shows its own E[lost](t) — the canvas is an instrument, not just a diagram. The
+      // root's curve lives in its ribbon, so it is not repeated here.
+      if (!isRoot) {
+        const r = results.get(id);
+        if (r && r.series) {
+          const curve = el("div");
+          curve.className = "node-curve";
+          curve.title = t("E[lost](t)");
+          curve.appendChild(sparkSvg(r.series, 176, 30));
+          bd.appendChild(curve);
+        } else if (r && r.error) {
+          const no = el("div", "—");
+          no.className = "node-curve muted";
+          no.title = `${t("preview unavailable")}: ${r.error}`;
+          bd.appendChild(no);
+        }
+      }
     }
     card.appendChild(bd);
 
@@ -678,14 +702,14 @@ export function renderCanvas({
       out.className = "port out";
       out.dataset.port = "out";
       out.dataset.path = id;
-      out.title = "drag to re-parent · drop on empty canvas to cut the link";
+      out.title = t("drag to re-parent · drop on empty canvas to cut the link");
       card.appendChild(out);
     }
     const inn = el("div");
     inn.className = "port in";
     inn.dataset.port = "in";
     inn.dataset.path = id;
-    inn.title = "member input — drop a pool here";
+    inn.title = t("member input — drop a pool here");
     card.appendChild(inn);
 
     card.dataset.baseTitle = card.title || "";
@@ -835,14 +859,14 @@ export function renderCanvas({
 
   const hud = el("div");
   hud.className = "hud";
-  const tidyBtn = el("button", "Tidy");
+  const tidyBtn = el("button", t("Tidy"));
   tidyBtn.className = "ghost tiny";
   tidyBtn.dataset.act = "tidy";
-  tidyBtn.title = "forget manual positions and re-run the auto layout";
-  const fitBtn = el("button", "Fit");
+  tidyBtn.title = t("Tidy");
+  const fitBtn = el("button", t("Fit"));
   fitBtn.className = "ghost tiny";
   fitBtn.dataset.act = "fit";
-  const zhint = el("span", "space+drag pan · wheel zoom · ctrl+K commands");
+  const zhint = el("span", t("space+drag pan · wheel zoom · ctrl+K commands"));
   zhint.className = "hud-hint";
   const zoomLabel = el("span", `${Math.round(view.zoom * 100)}%`);
   zoomLabel.className = "zoom-label";
@@ -888,18 +912,24 @@ export function renderCanvas({
     }
   };
 
-  const showChip = (clientX, clientY, delta) => {
+  const showChip = (clientX, clientY, delta, note) => {
     const r = container.getBoundingClientRect();
     chip.hidden = false;
     chip.style.left = `${clientX - r.left + 18}px`;
     chip.style.top = `${clientY - r.top + 14}px`;
     chip.innerHTML = "";
+    if (note) {
+      const n = el("div", note);
+      n.className = "dc-note";
+      chip.appendChild(n);
+      return;
+    }
     if (!delta) {
-      chip.appendChild(el("div", "checking…"));
+      chip.appendChild(el("div", t("checking…")));
       return;
     }
     if (!delta.ok) {
-      chip.appendChild(el("div", "preview unavailable"));
+      chip.appendChild(el("div", t("preview unavailable")));
       return;
     }
     for (const row of delta.rows) {
@@ -1094,6 +1124,8 @@ export function renderCanvas({
             : check.reason;
         }
       }
+      if (!gesture.target) showChip(e.clientX, e.clientY, null, t("drop on a pool to re-link · release on empty space to cancel"));
+      else hideChip();
       if (from) {
         const snap = gesture.target
           ? portCenter(gesture.target, "in")
@@ -1155,9 +1187,10 @@ export function renderCanvas({
         if (actions.onRejectDrop) actions.onRejectDrop(g.id, g.badReason);
         return;
       }
-      // releasing a link on empty canvas cuts it (the root has no out port, so every link drag
-      // starts from a node that has a parent)
-      if (actions.onCutLink) actions.onCutLink(g.id);
+      // Releasing in empty space cancels: it must never delete the node (and its subtree) as a side
+      // effect of an aborted drag. Cutting is explicit — Del on the selected wire, the hover ✕, or
+      // Delete pool in the context menu.
+      if (actions.onLinkVoid) actions.onLinkVoid(g.id);
     }
   };
 
@@ -1218,7 +1251,32 @@ export function renderCanvas({
 
     const card = e.target.closest(".node");
     if (!card) {
-      if (actions.onSelect) actions.onSelect(null);
+      if (container.classList.contains("space-pan")) return;
+      // left-drag on empty canvas pans (the gesture people expect); a click without movement
+      // deselects instead
+      const start = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
+      let panned = false;
+      const move = (ev) => {
+        if (!panned && Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < 4)
+          return;
+        if (!panned) {
+          panned = true;
+          container.classList.add("panning");
+        }
+        view.x = start.vx + (ev.clientX - start.x);
+        view.y = start.vy + (ev.clientY - start.y);
+        applyView();
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        container.classList.remove("panning");
+        if (panned) {
+          if (actions.onView) actions.onView({ ...view });
+        } else if (actions.onSelect) actions.onSelect(null);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
       return;
     }
     if (container.classList.contains("space-pan")) return;
@@ -1240,6 +1298,19 @@ export function renderCanvas({
   };
 
   container.__dragActive = () => !!gesture;
+  container.__worldFromClient = (clientX, clientY) => {
+    const r = container.getBoundingClientRect();
+    return screenToWorld(view, clientX - r.left, clientY - r.top);
+  };
+  container.__highlightTarget = (clientX, clientY, ok) => {
+    clearTargetStyles();
+    const id = cardUnder(clientX, clientY);
+    if (!id) return null;
+    const c = cards.get(id);
+    if (c) c.el.classList.add(ok === false ? "drop-bad" : "drop-ok");
+    return id;
+  };
+  container.__clearTargets = clearTargetStyles;
   container.__setSelection = setSelectionInPlace;
   container.__reflow = reflow;
   container.__showPreview = (id, p) => {
@@ -1320,6 +1391,11 @@ export function renderCanvas({
 
   // inline editing of numeric card values
   const onDblClick = (e) => {
+    if (!e.target.closest(".node")) {
+      if (actions.onCanvasDblClick)
+        actions.onCanvasDblClick(container.__worldFromClient(e.clientX, e.clientY), e);
+      return;
+    }
     const row = e.target.closest(".kv[data-editable]");
     if (!row) return;
     const card = e.target.closest(".node");

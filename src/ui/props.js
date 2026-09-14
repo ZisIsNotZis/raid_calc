@@ -39,19 +39,19 @@ function selectedNodeInfo(config, selection) {
 
 export function renderProps(
   root,
-  { config, selection, onSet, onStructural, onPromote, onDelete, previewNote },
+  { config, selection, onSet, onStructural, onPromote, onDelete, t = (x) => x },
 ) {
   root.innerHTML = "";
   const info = selectedNodeInfo(config, selection);
   if (!info) {
-    root.appendChild(el("h3", "Nothing selected"));
+    root.appendChild(el("h3", t("Nothing selected")));
     root.appendChild(
       note(
         "Click a pool card to edit it. Drag a card to move or re-parent it; drag its top port to " +
           "re-link it. Drag a disk model from the library onto a pool to add a member.",
       ),
     );
-    root.appendChild(el("h4", "Canvas gestures"));
+    root.appendChild(el("h4", t("Canvas gestures")));
     const list = el("div");
     list.className = "keylist";
     for (const [k, v] of [
@@ -70,7 +70,7 @@ export function renderProps(
     }
     root.appendChild(list);
     root.appendChild(
-      el("p", "Ctrl+K opens the command palette. ? lists every shortcut."),
+      el("p", t("Ctrl+K opens the command palette. ? lists every shortcut.")),
     ).className = "hint";
     return;
   }
@@ -78,23 +78,23 @@ export function renderProps(
   const h = el(
     "h3",
     info.type === "scenario"
-      ? "Scenario"
+      ? t("Scenario")
       : info.type === "kind"
-        ? `Disk model · ${info.path.slice(6)}`
+        ? t("Disk model · {id}", { id: info.path.slice(6) })
         : info.path === "tree"
-          ? "Root pool (top-level)"
-          : `Pool · ${info.path}`,
+          ? t("Root pool (top-level)")
+          : t("Pool · {path}", { path: info.path }),
   );
   root.appendChild(h);
   const crumb = el(
     "div",
     info.type === "pool"
       ? info.path === "tree"
-        ? `${info.node.strategy} · result of the whole config`
+        ? `${info.node.strategy} · ${t("result of the whole config")}`
         : info.node.strategy
       : info.type === "kind"
-        ? `referenced ${kindRefCount(config, info.path.slice(6))}× on the canvas`
-        : "workload + global timings",
+        ? t("referenced {n}× on the canvas", { n: kindRefCount(config, info.path.slice(6)) })
+        : t("workload + global timings"),
   );
   crumb.className = "crumb";
   root.appendChild(crumb);
@@ -141,18 +141,18 @@ export function renderProps(
       try {
         value = parse(input.value);
       } catch {
-        markInvalid(input, errorBox, `invalid value for ${label}`);
+        markInvalid(input, errorBox, t("invalid value for {label}", { label }));
         return;
       }
       if (min !== undefined && value < min) {
-        markInvalid(input, errorBox, `${label} must be >= ${min}`);
+        markInvalid(input, errorBox, t("{label} must be >= {min}", { label, min }));
         return;
       }
       clearInvalid(input, errorBox);
       lastCommitted = input.value;
       input.dataset.dirty = "";
       const ok = onSet((cfg) => setField(cfg, info, key, value), label);
-      if (!ok) markInvalid(input, errorBox, "edit rejected — check the full config");
+      if (!ok) markInvalid(input, errorBox, t("edit rejected — check the full config"));
     };
     input.addEventListener("input", () => {
       // a dirty field keeps native undo inside itself; a clean one lets Ctrl+Z reach the app
@@ -186,30 +186,30 @@ export function renderProps(
 
   if (info.type === "pool") {
     root.appendChild(
-      select("Strategy", Object.entries(STRATEGY_LABELS), info.node.strategy, (s) =>
+      select(t("Strategy"), Object.entries(STRATEGY_LABELS), info.node.strategy, (s) =>
         onStructural((cfg) => switchStrategy(cfg, info.path, s), "strategy"),
       ),
     );
     if (info.node.strategy === "strip")
-      root.appendChild(field("D data members", { key: "d", parse: intParse, min: 1 }));
+      root.appendChild(field(t("D data members"), { key: "d", parse: intParse, min: 1 }));
     if (info.node.strategy === "strip")
-      root.appendChild(field("M parity", { key: "m", parse: intParse, min: 0 }));
+      root.appendChild(field(t("M parity"), { key: "m", parse: intParse, min: 0 }));
     if (info.node.strategy === "split" || info.node.strategy === "strip-split") {
-      root.appendChild(field("N data chunks", { key: "n", parse: intParse, min: 1 }));
+      root.appendChild(field(t("N data chunks"), { key: "n", parse: intParse, min: 1 }));
       root.appendChild(field("M parity", { key: "m", parse: intParse, min: 0 }));
     }
     root.appendChild(
-      field("λ common-cause (/h)", { key: "lambdaCC", parse: floatParse, min: 0 }),
+      field(t("λ common-cause (/h)"), { key: "lambdaCC", parse: floatParse, min: 0 }),
     );
 
-    root.appendChild(el("h4", "Members (order matters)"));
+    root.appendChild(el("h4", t("Members (order matters)")));
     const list = el("div");
     list.className = "members-list";
     (info.node.members || []).forEach((m, i) => {
       const row = el("div");
       row.className = "member-row";
       row.appendChild(
-        el("span", isKindNode(m) ? `${m.count}× ${m.kind}` : `${m.strategy} pool`),
+        el("span", isKindNode(m) ? `${m.count}× ${m.kind}` : `${m.strategy} ${t("Pool")}`),
       );
       const up = tiny("↑", () =>
         onStructural((cfg) => reorderMember(cfg, info.path, i, -1), "reorder"),
@@ -246,7 +246,7 @@ export function renderProps(
     });
     root.appendChild(list);
     root.appendChild(
-      tiny("+ add pool member", () =>
+      tiny(t("+ add pool member"), () =>
         onStructural(
           (cfg) => addPool(cfg, { strategy: "concat", parentPath: info.path }),
           "add member",
@@ -254,12 +254,11 @@ export function renderProps(
       ),
     );
 
-    root.appendChild(el("h4", "Actions"));
+    root.appendChild(el("h4", t("Actions")));
     if (info.path !== "tree")
-      root.appendChild(tiny("⬆ Set as top-level", () => onPromote(info.path)));
+      root.appendChild(tiny(t("⬆ Set as top-level"), () => onPromote(info.path)));
     if (info.path !== "tree")
-      root.appendChild(tiny("🗑 Delete pool", () => onDelete(info.path), "danger"));
-    if (previewNote) root.appendChild(note(previewNote));
+      root.appendChild(tiny(t("🗑 Delete pool"), () => onDelete(info.path), "danger"));
     return;
   }
 
@@ -267,23 +266,23 @@ export function renderProps(
 
   if (info.type === "kind") {
     root.appendChild(
-      field("Capacity (TB)", { key: "capacityTB", parse: floatParse, min: 0.001 }),
+      field(t("Capacity (TB)"), { key: "capacityTB", parse: floatParse, min: 0.001 }),
     );
-    root.appendChild(field("λ base (/h)", { key: "lambdaBase", parse: floatParse, min: 0 }));
-    root.appendChild(field("λ read (/B)", { key: "lambdaRead", parse: floatParse, min: 0 }));
-    root.appendChild(field("λ write (/B)", { key: "lambdaWrite", parse: floatParse, min: 0 }));
-    root.appendChild(field("URE (/B)", { key: "ure", parse: floatParse, min: 0 }));
+    root.appendChild(field(t("λ base (/h)"), { key: "lambdaBase", parse: floatParse, min: 0 }));
+    root.appendChild(field(t("λ read (/B)"), { key: "lambdaRead", parse: floatParse, min: 0 }));
+    root.appendChild(field(t("λ write (/B)"), { key: "lambdaWrite", parse: floatParse, min: 0 }));
+    root.appendChild(field(t("URE (/B)"), { key: "ure", parse: floatParse, min: 0 }));
     root.appendChild(
-      field("Read bandwidth (MB/s)", { key: "readBW", parse: mbpsParse, min: 0 }),
+      field(t("Read bandwidth (MB/s)"), { key: "readBW", parse: mbpsParse, min: 0 }),
     );
     root.appendChild(
-      field("Write bandwidth (MB/s)", { key: "writeBW", parse: mbpsParse, min: 0 }),
+      field(t("Write bandwidth (MB/s)"), { key: "writeBW", parse: mbpsParse, min: 0 }),
     );
-    root.appendChild(field("Inventory count", { key: "count", parse: intParse, min: 1 }));
-    root.appendChild(field("Hot spares (auto)", { key: "spares", parse: intParse, min: 0 }));
+    root.appendChild(field(t("Inventory count"), { key: "count", parse: intParse, min: 1 }));
+    root.appendChild(field(t("Hot spares (auto)"), { key: "spares", parse: intParse, min: 0 }));
     root.appendChild(el("h4", "Actions"));
     root.appendChild(
-      tiny("🗑 Delete disk model", () => onDelete(info.path), "danger"),
+      tiny(t("🗑 Delete disk model"), () => onDelete(info.path), "danger"),
     );
     return;
   }
@@ -291,29 +290,29 @@ export function renderProps(
   // ---- scenario ---------------------------------------------------------------
 
   const g = config.global || {};
-  root.appendChild(el("h4", "Workload"));
-  root.appendChild(field("Store ≥ (TB)", { key: "storeTB", parse: floatParse, min: 0.001 }));
-  root.appendChild(field("Avg read (MB/s)", { key: "readBps", parse: mbpsParse, min: 0 }));
-  root.appendChild(field("Avg write (MB/s)", { key: "writeBps", parse: mbpsParse, min: 0 }));
+  root.appendChild(el("h4", t("Workload")));
+  root.appendChild(field(t("Store ≥ (TB)"), { key: "storeTB", parse: floatParse, min: 0.001 }));
+  root.appendChild(field(t("Avg read (MB/s)"), { key: "readBps", parse: mbpsParse, min: 0 }));
+  root.appendChild(field(t("Avg write (MB/s)"), { key: "writeBps", parse: mbpsParse, min: 0 }));
   root.appendChild(
-    field("Avg file size (MB)", { key: "avgFileMB", parse: floatParse, min: 0.001 }),
+    field(t("Avg file size (MB)"), { key: "avgFileMB", parse: floatParse, min: 0.001 }),
   );
   root.appendChild(
-    field("Horizon (years)", { key: "horizonY", parse: floatParse, min: 0.001 }),
+    field(t("Horizon (years)"), { key: "horizonY", parse: floatParse, min: 0.001 }),
   );
-  root.appendChild(el("h4", "Global"));
-  root.appendChild(field("T_op human (h)", { key: "tOpH", parse: floatParse, min: 0 }));
-  root.appendChild(field("T_swap spare (h)", { key: "tSwapH", parse: floatParse, min: 0 }));
-  root.appendChild(field("T_proc buy (h)", { key: "tProcH", parse: floatParse, min: 0 }));
+  root.appendChild(el("h4", t("Global")));
+  root.appendChild(field(t("T_op human (h)"), { key: "tOpH", parse: floatParse, min: 0 }));
+  root.appendChild(field(t("T_swap spare (h)"), { key: "tSwapH", parse: floatParse, min: 0 }));
+  root.appendChild(field(t("T_proc buy (h)"), { key: "tProcH", parse: floatParse, min: 0 }));
   root.appendChild(
-    field("Dedicated rebuild bw (MB/s)", { key: "rebuildBw", parse: mbpsParse, min: 0 }),
+    field(t("Dedicated rebuild bw (MB/s)"), { key: "rebuildBw", parse: mbpsParse, min: 0 }),
   );
   root.appendChild(
     select(
-      "Bandwidth mode",
+      t("Bandwidth mode"),
       [
-        ["true", "contended (shared with workload)"],
-        ["false", "dedicated rebuildBw"],
+        [ "true", t("contended (shared with workload)") ],
+        [ "false", t("dedicated rebuildBw") ],
       ],
       String(g.contention),
       (v) =>

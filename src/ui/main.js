@@ -19,9 +19,20 @@ import {
   setRoot,
   setRootPlan,
   setPath,
+  walkPools,
   kindUsage,
 } from "./canvas.js";
-import { rekeyPositions } from "./positions.js";
+import { rekeyPositions, PAD } from "./positions.js";
+import {
+  makeT,
+  applyTheme,
+  detectLang,
+  detectTheme,
+  readPrefs,
+  writePrefs,
+  LANGS,
+  THEMES,
+} from "./i18n.js";
 import { renderProps, SCENARIO_ID } from "./props.js";
 import {
   safeEvaluate,
@@ -32,6 +43,7 @@ import {
 } from "./results.js";
 import { renderChart, evaluateSeries, fmtBytes } from "./charts.js";
 import { openPalette, openShortcuts, askConfirm } from "./commands.js";
+import { setPreviewTranslator } from "./canvas.js";
 import { validate, TB } from "../core/config.js";
 
 const SAMPLE_CONFIG = {
@@ -102,6 +114,21 @@ const PALETTE_COLORS = [
 
 export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   const store = createStore(initialConfig);
+  const prefs = readPrefs();
+  let lang = LANGS.includes(prefs.lang)
+    ? prefs.lang
+    : LANGS.includes((initialConfig.ui || {}).lang)
+      ? initialConfig.ui.lang
+      : detectLang();
+  let theme = applyTheme(
+    THEMES.includes(prefs.theme)
+      ? prefs.theme
+      : THEMES.includes((initialConfig.ui || {}).theme)
+        ? initialConfig.ui.theme
+        : detectTheme(),
+  );
+  let t = makeT(lang);
+  setPreviewTranslator((text, vars) => t(text, vars));
   let selection = "tree";
   let selWire = null;
   let lastResult = null;
@@ -112,6 +139,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   const cardResults = new Map(); // path -> { fmt, series } | { error }
   const cheapCache = new Map();
   let previewTimer = null;
+  let allPreviewTimer = null;
   let viewSaveTimer = null;
 
   // ---- shell ------------------------------------------------------------------
@@ -130,6 +158,24 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   const drawerBtn = btn("Results", "ghost");
   const runBtn = btn("▶ Run", "primary");
   const optimizeBtn = btn("✦ Auto-optimize", "magic");
+  const langSel = document.createElement("select");
+  langSel.className = "mini-select";
+  langSel.title = "language / 语言";
+  for (const [value, label] of [["en", "EN"], ["zh", "中文"]]) {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    langSel.appendChild(o);
+  }
+  const themeSel = document.createElement("select");
+  themeSel.className = "mini-select";
+  themeSel.title = "theme";
+  for (const [value, label] of [["dark", "🌙"], ["light", "☀"]]) {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    themeSel.appendChild(o);
+  }
   const spacer = document.createElement("div");
   spacer.className = "spacer";
   for (const b of [
@@ -140,6 +186,8 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     exportBtn,
     spacer,
     scenarioChip,
+    langSel,
+    themeSel,
     helpBtn,
     drawerBtn,
     runBtn,
@@ -161,6 +209,22 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   drawer.hidden = true;
 
   rootEl.append(header, side, canvas, props, drawer);
+
+  const renderChrome = () => {
+    runBtn.textContent = `▶ ${t("Run")}`;
+    optimizeBtn.textContent = `✦ ${t("Auto-optimize")}`;
+    importBtn.textContent = t("Import");
+    exportBtn.textContent = t("Export");
+    resetBtn.textContent = t("Reset example");
+    drawerBtn.textContent = t("Results");
+    undoBtn.title = t("Undo");
+    redoBtn.title = t("Redo");
+    helpBtn.title = t("keyboard & gestures");
+    scenarioChip.title = t("workload + global timings (selects the Scenario panel)");
+    if (typeof document !== "undefined") document.documentElement.lang = lang;
+    langSel.value = lang;
+    themeSel.value = theme;
+  };
 
   // ---- config helpers ---------------------------------------------------------
 
@@ -203,6 +267,27 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   };
 
   const uiOf = () => store.get().ui || {};
+
+  const applyLang = (next) => {
+    lang = LANGS.includes(next) ? next : "en";
+    t = makeT(lang);
+    writePrefs({ ...readPrefs(), lang, theme });
+    commitUi((ui) => ({ ...ui, lang }), { render: false });
+    renderChrome();
+    renderAll();
+  };
+
+  const applyThemeChoice = (next) => {
+    theme = applyTheme(next);
+    writePrefs({ ...readPrefs(), lang, theme });
+    commitUi((ui) => ({ ...ui, theme }), { render: false });
+    renderChrome();
+    renderDrawer();
+    if (canvas.__reflow) canvas.__reflow();
+  };
+
+  langSel.addEventListener("change", () => applyLang(langSel.value));
+  themeSel.addEventListener("change", () => applyThemeChoice(themeSel.value));
 
   // Any config edit invalidates the last Run. The root ribbon keeps showing it, flagged, until the
   // user runs again — deleting it outright would blank the primary readout on every edit.
@@ -328,6 +413,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     renderProps(props, propsArgs());
     renderSidebar(cfg);
     renderDrawer();
+    scheduleAllPreviews();
     schedulePreview();
   };
 
@@ -400,7 +486,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
         },
         onPreviewDrop,
         onRejectDrop: (id, reason) => {
-          toast(reason || "that drop is not allowed", "bad");
+          toast(reason || t("that drop is not allowed"), "bad");
           const c = canvas.querySelector(".node.dragging");
           if (c) c.classList.remove("dragging");
           renderAll();
@@ -414,6 +500,13 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
           renderAll();
         },
         onContextMenu: (e, id) => openContextMenu(e, id),
+        onCanvasDblClick: (world, e) =>
+          createPoolAt(world, { clientX: e.clientX, clientY: e.clientY }),
+        onLinkVoid: () => {
+          // an aborted link drag must not delete anything
+          toast(t("the link was kept — click its wire (or hover ✕) to cut it"));
+          renderAll();
+        },
   });
 
   const propsArgs = () => ({
@@ -427,7 +520,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
         renderCanvasOnly();
         renderSidebar(store.get());
         // the config changed, so the standalone preview is stale (the root ribbon is kept, flagged)
-        if (selection !== "tree") cardResults.delete(selection);
+        scheduleAllPreviews();
         schedulePreview();
       }
       return ok;
@@ -440,17 +533,15 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
         renderCanvasOnly();
         renderSidebar(store.get());
         renderProps(props, propsArgs());
-        if (selection !== "tree") cardResults.delete(selection);
+        scheduleAllPreviews();
         schedulePreview();
       }
       return ok;
     },
     onPromote: (path) => promote(path),
     onDelete: (path) => deleteSelection(path),
-    previewNote:
-      selection && selection !== "tree" && isPoolPath(store.get(), selection)
-        ? "Standalone preview shown on the card."
-        : null,
+    previewNote: null,
+    t,
   });
 
   // Canvas-only re-render shared by the in-place paths (selection, form edits).
@@ -468,6 +559,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     results: cardResults,
     heights,
     actions: canvasActions(),
+    t,
   });
 
   const isPoolPath = (cfg, path) => isPoolNode(resolvePath(cfg, path));
@@ -482,11 +574,15 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     if (plan.kind === "wrap") {
       const ok = await askConfirm({
         host: rootEl,
-        title: "Keep the rest of the tree?",
+        title: t("Keep the rest of the tree?"),
         body:
-          `Promoting this pool would leave ${plan.others} other node(s) outside the new root. ` +
-          `Keep them by nesting the old root under the promoted pool (nothing is discarded), or cancel.`,
-        okLabel: "Promote & keep",
+          t("Promoting this pool would leave {n} other node(s) outside the new root. ", {
+            n: plan.others,
+          }) +
+          t(
+            "Keep them by nesting the old root under the promoted pool (nothing is discarded), or cancel.",
+          ),
+        okLabel: t("Promote & keep"),
       });
       if (!ok) return;
       wrap = true;
@@ -510,7 +606,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       return;
     }
     if (path === "tree") {
-      toast("the root cannot be deleted — promote another pool first", "bad");
+      toast(t("the root cannot be deleted — promote another pool first"), "bad");
       return;
     }
     if (commit((c) => removeNode(c, path), "delete pool") && selection === path)
@@ -518,10 +614,53 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     renderAll();
   };
 
+  // Where does a drag-out / double-click land in the tree? A pool card under the pointer is the
+  // parent; empty canvas means the selected pool if one is selected, else the root.
+  const dropParent = (clientX, clientY) => {
+    const card = clientX === undefined ? null : cardAt(clientX, clientY);
+    if (card) return card.dataset.id;
+    const cfg = store.get();
+    return isPoolPath(cfg, selection) ? selection : "tree";
+  };
+
+  // Create a pool (optionally seeded with one disk of `kindId`) at a canvas point, keeping the
+  // dropped position. Seeding matters: an empty pool is invalid, so every created pool must be
+  // immediately runnable.
+  const createPoolAt = (world, { kindId = null, strategy = "concat", clientX, clientY } = {}) => {
+    const parentPath = dropParent(clientX, clientY);
+    const cfg0 = store.get();
+    if (isPoolPath(cfg0, parentPath) || parentPath === "tree") {
+      const parent = resolvePath(cfg0, parentPath);
+      if (!parent || !parent.members) return;
+    } else return;
+    const seedKind = kindId || Object.keys(cfg0.kinds)[0] || null;
+    let newPath = null;
+    const ok = commit((c) => {
+      const parent = resolvePath(c, parentPath);
+      const slot = parent.members.length;
+      newPath = `${parentPath}.members[${slot}]`;
+      let next = addPool(c, { strategy, parentPath, slotIndex: slot });
+      if (seedKind && strategy === "concat")
+        next = connectDiskToPool(next, seedKind, newPath);
+      return next;
+    }, "create pool");
+    if (!ok || !newPath) return;
+    if (world)
+      commitUi(
+        (ui) => ({
+          ...ui,
+          pos: { ...(ui.pos || {}), [newPath]: { x: world.x - PAD, y: world.y - PAD } },
+        }),
+        { render: false },
+      );
+    selection = newPath;
+    renderAll();
+  };
+
   // Wrap `id` in a fresh concat pool that takes its place as a sibling.
   const wrapInPool = (id) => {
     if (!id || !/\.members\[\d+\]$/.test(id) || id === "tree" || id === SCENARIO_ID) {
-      toast("select a pool that already sits inside another pool", "bad");
+      toast(t("select a pool that already sits inside another pool"), "bad");
       return;
     }
     const parent = parentPathOf(id);
@@ -549,11 +688,11 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     const menu = menuAt({ x: e.clientX, y: e.clientY }, document.body, true);
     if (!isRoot)
       menu.appendChild(
-        menuItem("Set as top-level", () => promote(id)),
+        menuItem(t("Set as top-level"), () => promote(id)),
       );
     menu.appendChild(
       menuItem(
-        (uiOf().collapsed || {})[id] ? "Expand" : "Collapse",
+        (uiOf().collapsed || {})[id] ? t("Expand") : t("Collapse"),
         () =>
           commitUi(
             (ui) => ({
@@ -565,22 +704,22 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       ),
     );
     menu.appendChild(
-      menuItem("Add member pool", () => {
+      menuItem(t("Add member pool"), () => {
         commit((c) => addPool(c, { strategy: "concat", parentPath: id }), "add member pool");
         renderAll();
       }),
     );
     if (!isRoot)
-      menu.appendChild(menuItem("Wrap in a new pool", () => wrapInPool(id)));
+      menu.appendChild(menuItem(t("Wrap in a new pool"), () => wrapInPool(id)));
     menu.appendChild(
-      menuItem("Copy config JSON", () => {
+      menuItem(t("Copy config JSON"), () => {
         const json = JSON.stringify(cfg, null, 2);
         if (navigator.clipboard) navigator.clipboard.writeText(json);
-        toast("config JSON copied", "ok");
+        toast(t("config JSON copied"), "ok");
       }),
     );
     if (!isRoot)
-      menu.appendChild(menuItem("Delete pool", () => deleteSelection(id), "danger"));
+      menu.appendChild(menuItem(t("Delete pool"), () => deleteSelection(id), "danger"));
   };
 
   // ---- sidebar ----------------------------------------------------------------
@@ -588,19 +727,23 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   const renderSidebar = (cfg) => {
     side.innerHTML = "";
 
-    side.appendChild(el("h3", "Build"));
-    const palPool = palItem("Pool", "var(--accent)");
+    side.appendChild(el("h3", t("Build")));
+    const palPool = palItem(t("Pool"), "var(--accent)");
+    palPool.title = t("drag onto a pool (or empty canvas) to create one there");
+    palPool.addEventListener("pointerdown", (e) => startPaletteDrag(e, "pool"));
     palPool.addEventListener("click", () => {
-      const target = isPoolPath(cfg, selection) ? selection : "tree";
-      commit((c) => addPool(c, { strategy: "concat", parentPath: target }), "add pool");
-      renderAll();
+      if (suppressPaletteClick) {
+        suppressPaletteClick = false;
+        return;
+      }
+      createPoolAt(null, {});
     });
-    const palDisk = palItem("Disk model", "var(--warn)");
+    const palDisk = palItem(t("Disk model"), "var(--warn)");
     palDisk.addEventListener("click", addKind);
     side.appendChild(palPool);
     side.appendChild(palDisk);
 
-    side.appendChild(el("h3", "Disk library (drag onto a pool)"));
+    side.appendChild(el("h3", t("Disk library (drag onto a pool)")));
     const lib = el("div");
     lib.className = "library";
     for (const [id, kind] of Object.entries(cfg.kinds)) {
@@ -618,7 +761,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       const used = kindUsage(cfg, id);
       const meta = el(
         "div",
-        `${used}/${kind.count} used · ${kind.spares} spare`,
+        `${used}/${kind.count} ${t("referenced")} · ${kind.spares} ${t("hot spares")}`,
       );
       meta.className = "lib-meta";
       row.appendChild(meta);
@@ -635,7 +778,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     }
     side.appendChild(lib);
 
-    side.appendChild(el("h3", "Inventory"));
+    side.appendChild(el("h3", t("Inventory")));
     const inv = el("div");
     inv.className = "inventory";
     let total = 0;
@@ -648,10 +791,10 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       void id;
     }
     for (const [k, v] of [
-      ["disks", String(total)],
-      ["referenced", String(used)],
-      ["hot spares", String(spares)],
-      ["free", String(Math.max(0, total - used - spares))],
+      [t("disks"), String(total)],
+      [t("referenced"), String(used)],
+      [t("hot spares"), String(spares)],
+      [t("free"), String(Math.max(0, total - used - spares))],
     ]) {
       const row = el("div");
       row.className = "row";
@@ -661,16 +804,16 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     }
     side.appendChild(inv);
 
-    side.appendChild(el("h3", "Results"));
+    side.appendChild(el("h3", t("Results")));
     const rs = el("div");
     rs.className = "inventory";
     if (lastResult) {
       const s = fmtSummary(summarize(lastResult));
       for (const [k, v] of [
-        ["E[lost] @T", s.lost],
-        ["P(any loss)", s.anyLossPct],
-        ["usable", s.usable],
-        ["slowdown", s.slowdown],
+        [t("E[lost] @T"), s.lost],
+        [t("P(any loss)"), s.anyLossPct],
+        [t("usable"), s.usable],
+        [t("slowdown"), s.slowdown],
       ]) {
         const row = el("div");
         row.className = "row";
@@ -678,16 +821,16 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
         row.appendChild(el("b", v));
         rs.appendChild(row);
       }
-      const open = el("button", "Open charts");
+      const open = el("button", t("Open charts"));
       open.className = "ghost tiny";
       open.addEventListener("click", () => toggleDrawer(true));
       rs.appendChild(open);
     } else {
-      rs.appendChild(el("div", "press Run (R)"));
+      rs.appendChild(el("div", t("press Run (R)")));
     }
     side.appendChild(rs);
 
-    const foot = el("div", "Ctrl+K commands · ? shortcuts");
+    const foot = el("div", t("Ctrl+K commands · ? shortcuts"));
     foot.className = "side-foot";
     side.appendChild(foot);
   };
@@ -696,6 +839,40 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
 
   let libDrag = null;
   let suppressLibClick = false;
+  let suppressPaletteClick = false;
+
+  // Dragging "Pool" out of the palette: drop it on a pool to make it a member, or on empty canvas
+  // to create it there (this is why the old click-only button felt like it needed a selection).
+  const startPaletteDrag = (e, kind) => {
+    if (e.button !== 0) return;
+    const start = { x: e.clientX, y: e.clientY };
+    let moved = false;
+    const ghost = el("div", kind === "pool" ? `+ ${t("Pool")}` : `+ ${t("Disk model")}`);
+    ghost.className = "lib-ghost";
+    ghost.style.display = "none";
+    document.body.appendChild(ghost);
+    const move = (ev) => {
+      if (!moved && Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < 5) return;
+      moved = true;
+      ghost.style.display = "";
+      ghost.style.left = `${ev.clientX + 14}px`;
+      ghost.style.top = `${ev.clientY + 12}px`;
+      if (canvas.__highlightTarget)
+        canvas.__highlightTarget(ev.clientX, ev.clientY, true);
+    };
+    const up = (ev) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      ghost.remove();
+      suppressPaletteClick = moved;
+      if (canvas.__clearTargets) canvas.__clearTargets();
+      if (!moved) return;
+      const world = canvas.__worldFromClient(ev.clientX, ev.clientY);
+      createPoolAt(world, { clientX: ev.clientX, clientY: ev.clientY });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   const startLibraryDrag = (e, kindId) => {
     if (e.button !== 0) return;
     libDrag = { kindId, moved: false, start: { x: e.clientX, y: e.clientY } };
@@ -711,9 +888,8 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       ghost.style.display = "";
       ghost.style.left = `${ev.clientX + 14}px`;
       ghost.style.top = `${ev.clientY + 12}px`;
-      for (const n of canvas.querySelectorAll(".node")) n.classList.remove("drop-ok");
-      const card = cardAt(ev.clientX, ev.clientY);
-      if (card) card.classList.add("drop-ok");
+      if (canvas.__highlightTarget)
+        canvas.__highlightTarget(ev.clientX, ev.clientY, true);
     };
     const up = (ev) => {
       window.removeEventListener("pointermove", move);
@@ -723,10 +899,15 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       const moved = libDrag && libDrag.moved;
       libDrag = null;
       suppressLibClick = !!moved;
-      for (const n of canvas.querySelectorAll(".node")) n.classList.remove("drop-ok");
-      if (card && moved) {
+      if (canvas.__clearTargets) canvas.__clearTargets();
+      if (!moved) return;
+      if (card) {
         commit((c) => connectDiskToPool(c, kindId, card.dataset.id), "add disk member");
         renderAll();
+      } else {
+        // dropped on empty canvas: a disk on its own becomes a one-disk pool
+        const world = canvas.__worldFromClient(ev.clientX, ev.clientY);
+        createPoolAt(world, { kindId, clientX: ev.clientX, clientY: ev.clientY });
       }
     };
     window.addEventListener("pointermove", move);
@@ -751,12 +932,12 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     drawer.innerHTML = "";
     const head = el("div");
     head.className = "drawer-head";
-    head.appendChild(el("h2", "Results"));
+    head.appendChild(el("h2", t("Results")));
     const spacer2 = el("div");
     spacer2.className = "spacer";
     head.appendChild(spacer2);
     if (lastResult) {
-      const pin = el("button", "Pin current");
+      const pin = el("button", t("Pin current"));
       pin.className = "ghost tiny";
       pin.title = "keep this curve as a comparison overlay";
       pin.addEventListener("click", () => {
@@ -770,7 +951,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       head.appendChild(pin);
     }
     if (overlays.length) {
-      const clear = el("button", "Clear pins");
+      const clear = el("button", t("Clear pins"));
       clear.className = "ghost tiny";
       clear.addEventListener("click", () => {
         overlays = [];
@@ -785,7 +966,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     drawer.appendChild(head);
 
     if (!lastResult) {
-      const n = el("div", "Run the evaluation to see curves here.");
+      const n = el("div", t("Run the evaluation to see curves here."));
       n.className = "note";
       drawer.appendChild(n);
       return;
@@ -809,7 +990,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       return wrap;
     };
     grid.appendChild(
-      mk("E[lost](t)", true, (result, color, tag) => {
+      mk(t("E[lost](t)"), true, (result, color, tag) => {
         const out = [
           {
             label: `${tag} rigorous`,
@@ -838,7 +1019,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       }),
     );
     grid.appendChild(
-      mk("P(any loss)(t)", false, (result, color, tag) => {
+      mk(t("P(any loss)(t)"), false, (result, color, tag) => {
         const out = [
           { label: `${tag} P`, x: result.times, y: result.anyLossProb, color },
         ];
@@ -869,6 +1050,55 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   };
 
   // ---- previews ---------------------------------------------------------------
+
+  const poolPathsOf = (cfg) => {
+    const out = [];
+    walkPools(
+      cfg.tree,
+      "tree",
+      (_n, path) => {
+        if (path !== "tree") out.push(path);
+      },
+    );
+    return out;
+  };
+
+  // Cheap pass over every pool: each card shows its own E[lost](t) curve, and a stale curve for a
+  // node that no longer exists (paths shift on delete) would be a lie, so entries whose path
+  // disappeared are dropped as soon as the pool set changes.
+  const scheduleAllPreviews = () => {
+    clearTimeout(allPreviewTimer);
+    allPreviewTimer = setTimeout(() => {
+      // A canvas re-render in the middle of a gesture replaces the dragged card's element: the drag
+      // would snap back, lose its highlight and still commit on release. Defer instead.
+      if (canvas.__dragActive && canvas.__dragActive()) {
+        scheduleAllPreviews();
+        return;
+      }
+      const cfg = store.get();
+      const paths = poolPathsOf(cfg);
+      if (paths.length > 32) return; // keep the tab responsive on huge trees
+      for (const path of paths) {
+        let pcfg;
+        try {
+          pcfg = previewConfig(cfg, path);
+        } catch {
+          continue;
+        }
+        const { ok, result, error } = safeEvaluate(pcfg, {
+          stateBudget: 20000,
+          points: 9,
+        });
+        // an invalid or oversized subtree gets a marker instead of a curve, so a card without a
+        // curve says why rather than looking broken
+        cardResults.set(
+          path,
+          ok ? cardResult(result) : { error: error || "unsupported subtree" },
+        );
+      }
+      renderCanvasOnly();
+    }, 420);
+  };
 
   const schedulePreview = () => {
     clearTimeout(previewTimer);
@@ -920,12 +1150,19 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     menu.style.left = `${fixed ? point.x : point.x - h.left}px`;
     menu.style.top = `${fixed ? point.y : point.y - h.top}px`;
     host.appendChild(menu);
-    // keep the menu inside the window: a menu opened near an edge would otherwise be unclickable
-    const r = menu.getBoundingClientRect();
-    const overX = r.right - (window.innerWidth - 6);
-    const overY = r.bottom - (window.innerHeight - 6);
-    if (overX > 0) menu.style.left = `${parseFloat(menu.style.left) - overX}px`;
-    if (overY > 0) menu.style.top = `${parseFloat(menu.style.top) - overY}px`;
+    // Keep the menu inside the window: a menu opened near an edge is unclickable. Clamped twice —
+    // the first measurement can precede the final layout (fonts, wrapping).
+    const clampMenu = () => {
+      const r = menu.getBoundingClientRect();
+      const overX = r.right - (window.innerWidth - 6);
+      const overY = r.bottom - (window.innerHeight - 6);
+      if (overX > 0)
+        menu.style.left = `${Math.max(6, parseFloat(menu.style.left) - overX)}px`;
+      if (overY > 0)
+        menu.style.top = `${Math.max(6, parseFloat(menu.style.top) - overY)}px`;
+    };
+    clampMenu();
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(clampMenu);
     const close = (ev) => {
       if (menu.contains(ev.target)) return;
       menu.remove();
@@ -949,7 +1186,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
 
   runBtn.addEventListener("click", run);
   drawerBtn.addEventListener("click", () => toggleDrawer());
-  helpBtn.addEventListener("click", () => openShortcuts({ host: rootEl }));
+  helpBtn.addEventListener("click", () => openShortcuts({ host: rootEl, t }));
   scenarioChip.addEventListener("click", () => {
     selection = SCENARIO_ID;
     renderAll();
@@ -1021,31 +1258,31 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   // ---- command palette + keyboard ---------------------------------------------
 
   const commands = () => [
-    { label: "Add pool member to selection", run: () => {
+    { label: t("Add pool member to selection"), run: () => {
         const target = isPoolPath(store.get(), selection) ? selection : "tree";
         commit((c) => addPool(c, { strategy: "concat", parentPath: target }), "add pool");
         renderAll();
       } },
-    { label: "Add strip pool member", run: () => {
+    { label: t("Add strip pool member"), run: () => {
         const target = isPoolPath(store.get(), selection) ? selection : "tree";
         commit((c) => addPool(c, { strategy: "strip", parentPath: target }), "add strip pool");
         renderAll();
       } },
-    { label: "Add disk model", run: addKind },
-    { label: "Run evaluation", hint: "R", run },
-    { label: "Auto-optimize", run: () => optimizeBtn.click() },
-    { label: "Tidy canvas", hint: "T", run: () => commitUi((ui) => ({ ...ui, pos: {} }), { recordHistory: true }) },
-    { label: "Fit view", hint: "F", run: () => canvas.__view && canvas.__view.fit() },
-    { label: "Reset zoom", hint: "0", run: () => canvas.__view && canvas.__view.reset() },
-    { label: "Toggle results drawer", hint: "G", run: () => toggleDrawer() },
-    { label: "Scenario settings", run: () => { selection = SCENARIO_ID; renderAll(); } },
-    { label: "Set selection as top-level", run: () => promote(selection) },
-    { label: "Delete selection", hint: "Del", run: () => deleteSelection(selection) },
-    { label: "Wrap selection in a new pool", run: () => wrapInPool(selection) },
-    { label: "Undo", hint: "Ctrl+Z", run: () => { if (store.undo()) renderAll(); } },
-    { label: "Redo", hint: "Ctrl+Shift+Z", run: () => { if (store.redo()) renderAll(); } },
-    { label: "Export config", run: () => downloadConfig(store.get()) },
-    { label: "Shortcuts", hint: "?", run: () => openShortcuts({ host: rootEl }) },
+    { label: t("Add disk model"), run: addKind },
+    { label: t("Run evaluation"), hint: "R", run },
+    { label: t("Auto-optimize"), run: () => optimizeBtn.click() },
+    { label: t("Tidy canvas"), hint: "T", run: () => commitUi((ui) => ({ ...ui, pos: {} }), { recordHistory: true }) },
+    { label: t("Fit view"), hint: "F", run: () => canvas.__view && canvas.__view.fit() },
+    { label: t("Reset zoom"), hint: "0", run: () => canvas.__view && canvas.__view.reset() },
+    { label: t("Toggle results drawer"), hint: "G", run: () => toggleDrawer() },
+    { label: t("Scenario settings"), run: () => { selection = SCENARIO_ID; renderAll(); } },
+    { label: t("Set selection as top-level"), run: () => promote(selection) },
+    { label: t("Delete selection"), hint: "Del", run: () => deleteSelection(selection) },
+    { label: t("Wrap selection in a new pool"), run: () => wrapInPool(selection) },
+    { label: t("Undo"), hint: "Ctrl+Z", run: () => { if (store.undo()) renderAll(); } },
+    { label: t("Redo"), hint: "Ctrl+Shift+Z", run: () => { if (store.redo()) renderAll(); } },
+    { label: t("Export config"), run: () => downloadConfig(store.get()) },
+    { label: t("Shortcuts"), hint: "?", run: () => openShortcuts({ host: rootEl, t }) },
   ];
 
   const isTyping = (t) =>
@@ -1054,7 +1291,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   window.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
-      openPalette({ host: rootEl, commands: commands() });
+      openPalette({ host: rootEl, commands: commands(), t });
       return;
     }
     // A clean form field (nothing typed since the last commit) must not swallow Ctrl+Z: the user's
@@ -1131,24 +1368,24 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     try {
       mod = await import("../core/optimizer.js");
     } catch {
-      body.textContent = "Optimizer module unavailable.";
+      body.textContent = t("Optimizer module unavailable.");
       body.className = "note";
       return;
     }
     if (!mod.optimize) {
-      body.textContent = "Optimizer module exposes no optimize().";
+      body.textContent = t("Optimizer module exposes no optimize().");
       body.className = "note";
       return;
     }
     try {
       const res = await mod.optimize(cfg);
       if (!Array.isArray(res)) {
-        body.textContent = "optimize() returned an unexpected shape.";
+        body.textContent = t("optimize() returned an unexpected shape.");
         return;
       }
       const table = document.createElement("table");
       const thead = document.createElement("tr");
-      for (const h of ["#", "Design", "E[lost]", "P(loss)", "Usable", "Why", ""])
+      for (const h of ["#", t("Design"), "E[lost]", t("P(loss)"), t("usable"), t("Why"), ""])
         thead.appendChild(el("th", h));
       table.appendChild(thead);
       res.slice(0, 3).forEach((d, i) => {
@@ -1165,7 +1402,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
         tr.appendChild(why);
         const apply = el("td");
         if (d.tree) {
-          const b = el("button", "Apply");
+          const b = el("button", t("Apply"));
           b.className = "ghost tiny";
           b.addEventListener("click", () => {
             commit((c) => ({ ...c, tree: structuredClone(d.tree) }), "apply design");
@@ -1179,7 +1416,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       });
       const foot = el("div");
       foot.className = "foot";
-      const closeBtn = btn("Close", "ghost");
+      const closeBtn = btn(t("Close"), "ghost");
       closeBtn.addEventListener("click", close);
       foot.appendChild(closeBtn);
       body.textContent = "";
@@ -1195,6 +1432,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
 
   // ---- boot -------------------------------------------------------------------
 
+  renderChrome();
   renderAll();
   scenarioChip.textContent = scenarioLabel(store.get());
   store.subscribe(() => {

@@ -189,8 +189,9 @@ export function validate(config) {
 }
 
 // Usable capacity composes top-down: each strategy keeps its data-members' share of the
-// aggregate usable bytes its members present.
-function usableBytesOf(node, kinds) {
+// aggregate usable bytes its members present. Exported because the UI scales a subtree's workload
+// preview by that subtree's share of the top-level usable capacity (ui.md §5).
+export function usableBytesOf(node, kinds) {
   if (node.node === "kind")
     return kinds[node.kind].capacityTB * TB * node.count;
   const s = STRATEGIES[node.strategy];

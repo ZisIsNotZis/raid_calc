@@ -8,9 +8,16 @@ feedback) for what is a strict tree, so its affordances lied about the model. Co
 
 ## 1. Regions
 
-Header (undo/redo, reset, import/export, scenario chip, Run, Auto-optimize, Results toggle), left sidebar
-(palette, **Disk library**, inventory, comparison pins), center canvas, right properties panel, plus a
-bottom **results drawer** over the canvas.
+Header (undo/redo, reset, import/export, scenario chip, **language**, **theme**, shortcuts, Results
+toggle, Run, Auto-optimize), left sidebar (palette, **Disk library**, inventory, comparison pins), center
+canvas, right properties panel, plus a bottom **results drawer** over the canvas.
+
+**Language and theme** are environment choices, not project data, so the saved preference lives in
+`localStorage` (and is mirrored into `config.ui.lang` / `ui.theme` so an exported config carries it).
+Boot order: saved preference → config → browser/OS hint (`navigator.language`, `prefers-color-scheme`).
+Translations live in `src/ui/i18n.js`, keyed by the English string so an untranslated string degrades to
+readable English instead of an identifier. The light theme is a `[data-theme="light"]` variable set;
+nothing outside `index.html`'s variables may hard-code a color.
 
 Nothing is duplicated across regions. Top-level results have exactly one home (§5).
 
@@ -36,6 +43,9 @@ Nothing is duplicated across regions. Top-level results have exactly one home (�
   children of it, wires are one SVG inside it. Port coordinates come from `offsetLeft/offsetTop`
   (world-local) — never `getBoundingClientRect`, which would break under zoom.
 - **Minimap** (bottom-right): node rectangles + viewport rect; click or drag to move the view.
+- **Empty-canvas gestures**: left-drag on empty canvas pans (a click without movement deselects),
+  middle-drag and space-drag also pan, and the canvas is `user-select:none` so a drag never paints a
+  text selection. Double-clicking empty canvas creates a pool there.
 - **Free positions, explicit tidy.** `config.ui.pos[path] = {x,y}` holds user drags (part of the config,
   so it survives export/import). Nodes without a stored position are placed by the tidy-tree base layout.
   The `Tidy` button clears all stored positions (`ui.pos`), restoring the computed tree.
@@ -53,8 +63,11 @@ Nothing is duplicated across regions. Top-level results have exactly one home (�
 | Pointer-drag a card (>4px), drop on empty canvas | Move (persists to `ui.pos`) |
 | Pointer-drag a card, drop on a pool card | Re-parent: becomes a member of that pool (appended last) |
 | Drag a library kind onto a pool card | Append a kind-ref member |
+| Drag a library kind onto empty canvas | Create a one-disk pool at that point |
+| Drag the sidebar "Pool" item onto a pool card / empty canvas | Create a pool as that pool's member / at that point |
+| Double-click empty canvas | Create a pool there |
 | Drag a card's **top port** (`out`) | Re-link: the card detaches from its parent and follows the cursor; drop on another pool to re-parent |
-| Release a link drag on empty canvas | Cuts the link (the card leaves the tree) |
+| Release a link drag on empty canvas | **Cancels** — the link is kept. Cutting is explicit (`Del` on the selected wire, the hover ✕, or *Delete pool*); an aborted drag must never delete a node and its subtree |
 | Release any drag on an *illegal* target | Reverts to where the gesture started, and the reason stays on screen — nothing is parked on top of the target |
 | Click a wire | Selects it (highlight); `Del` removes it |
 | Hover a wire, then click its ✕ | Removes that link (the button waits for the pointer to reach it) |
@@ -78,11 +91,18 @@ hovering instead of surfacing as a failure after release.
   reading size — E[lost](t) on a **log y-axis**, P(any loss)(t) **linear 0–1** — for mode 1 (and mode 2
   side by side), plus the full metric list. Comparison overlays for pinned configs and optimizer top-3
   render here.
-- **Per-node standalone preview**: selecting a pool evaluates that subtree standalone (workload scaled by
-  its share of top-level usable capacity) and shows three metrics (E[lost], P(any loss), rebuild
+- **Every pool card carries its own E[lost](t) curve** — the canvas is an instrument, not a diagram.
+  A cheap pass (9 points, state budget 2·10⁴, debounced 420 ms, skipped above 32 pools) evaluates each
+  subtree; a card whose subtree is invalid (or too large) shows a muted `—` with the reason as its
+  tooltip instead of a curve, and the async pass defers while a drag is live so a re-render can never
+  yank a card out from under the pointer.
+- **Per-node standalone preview**: selecting a pool shows three metrics (E[lost], P(any loss), rebuild
   slowdown) plus a sparkline in a **popover anchored under the selected card**, debounced 300 ms, with a
   reduced state budget so oversized subtrees fail fast; an invalid or oversized subtree says so in the
-  popover instead of leaving it blank. The popover is deliberately *outside* the card: a card that grew
+  popover instead of leaving it blank.
+- **The preview workload is scaled by the subtree's share of top-level usable capacity** (and capped at
+  99.9% of that subtree's own usable bytes). Without the cap a small subtree would fail validation
+  outright ("storeTB exceeds usable capacity") and could never show a curve at all. The popover is deliberately *outside* the card: a card that grew
   after layout would move under the cursor (breaking the second click of a double-click) and could cover
   its own wire. It is `pointer-events:none`, so it can never intercept a gesture. Evaluations run on the
   main thread with a small point count and state budget; a Worker is deliberately **not** used
