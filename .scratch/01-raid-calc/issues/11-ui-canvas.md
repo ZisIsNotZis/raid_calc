@@ -1,6 +1,6 @@
 # Ticket: 11-ui-canvas
 
-- **Status:** ready-for-agent
+- **Status:** done
 - **Need-review:** yes (behavior changes)
 
 ## Issue

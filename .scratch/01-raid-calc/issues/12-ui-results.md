@@ -1,6 +1,6 @@
 # Ticket: 12-ui-results
 
-- **Status:** ready-for-agent
+- **Status:** done
 - **Need-review:** yes (behavior changes)
 
 ## Issue
