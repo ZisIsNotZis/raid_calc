@@ -42,7 +42,7 @@ Design refs: docs/design/ui.md (§1, §3, §4, §5 — updated in this ticket), 
 ## Comments (implementation + closure)
 
 - 2026-09-13 agent (pi, deepseek-v4): implemented (b7333c2 feature + review fixes), merged to master as
-  the merge commit below; ticket done and lock released by that merge.
+  52c1238 (merge commit = ticket done + lock release).
 - 2026-09-13 agent: two adversarial review rounds, each finding blocking defects; all fixed with a
   smoke check per fix. The sharpest ones:
   - creating a pool appended to whatever pool was under the pointer, and `strip`/`split` pools accept an
