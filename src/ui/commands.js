@@ -1,11 +1,11 @@
 // Command palette (Ctrl+K) and the shortcut cheat-sheet overlay.
 // Blender F3 muscle memory: one search box over every action the UI exposes.
 
-export function openPalette({ host, commands, onClose }) {
+export function openPalette({ host, commands, onClose, t = (x) => x }) {
   const overlay = document.createElement("div");
   overlay.className = "modal palette-modal";
   overlay.innerHTML =
-    '<div class="card palette-card"><input class="palette-input" placeholder="Type a command…" />' +
+    `<div class="card palette-card"><input class="palette-input" placeholder="${t("Type a command…")}" />` +
     '<div class="palette-list"></div></div>';
   host.appendChild(overlay);
 
@@ -37,7 +37,7 @@ export function openPalette({ host, commands, onClose }) {
     if (!filtered.length) {
       const empty = document.createElement("div");
       empty.className = "palette-row";
-      empty.textContent = "no matching command";
+      empty.textContent = t("no matching command");
       list.appendChild(empty);
     }
   };
@@ -100,7 +100,14 @@ export function fuzzyMatch(text, query) {
 
 // Promise-based confirm dialog (window.confirm is unusable inside the single-file artifact's
 // styling and cannot explain consequences).
-export function askConfirm({ host, title, body, okLabel = "Confirm", cancelLabel = "Cancel" }) {
+export function askConfirm({
+  host,
+  title,
+  body,
+  okLabel = "Confirm",
+  cancelLabel = "Cancel",
+  t = (x) => x,
+}) {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "modal";
@@ -116,10 +123,10 @@ export function askConfirm({ host, title, body, okLabel = "Confirm", cancelLabel
     const foot = document.createElement("div");
     foot.className = "foot";
     const cancel = document.createElement("button");
-    cancel.textContent = cancelLabel;
+    cancel.textContent = t(cancelLabel);
     cancel.className = "ghost";
     const ok = document.createElement("button");
-    ok.textContent = okLabel;
+    ok.textContent = t(okLabel);
     const finish = (v) => {
       overlay.remove();
       resolve(v);
@@ -149,20 +156,20 @@ const SHORTCUTS = [
   ["Delete", "delete the selected pool, disk model, or selected wire"],
   ["Esc", "cancel a drag · close a dialog · deselect"],
   ["drag card", "move it · drop on a pool to re-parent"],
-  ["drag top port", "re-link · drop on empty canvas to cut"],
+  ["drag top port", "re-link · drop on empty canvas to cancel"],
   ["click wire", "select it (hover shows ✕)"],
   ["double-click value", "edit it in place"],
   ["wheel · space+drag · middle-drag", "zoom · pan · pan"],
   ["Ctrl/⌘ + scroll", "zoom (same as wheel)"],
 ];
 
-export function openShortcuts({ host }) {
+export function openShortcuts({ host, t = (x) => x }) {
   const overlay = document.createElement("div");
   overlay.className = "modal";
   const card = document.createElement("div");
   card.className = "card";
   const h = document.createElement("h2");
-  h.textContent = "Keyboard & gestures";
+  h.textContent = t("Keyboard & gestures");
   card.appendChild(h);
   const list = document.createElement("div");
   list.className = "keylist";
@@ -172,7 +179,7 @@ export function openShortcuts({ host }) {
     const kbd = document.createElement("kbd");
     kbd.textContent = k;
     const span = document.createElement("span");
-    span.textContent = v;
+    span.textContent = t(v);
     row.appendChild(kbd);
     row.appendChild(span);
     list.appendChild(row);
@@ -181,7 +188,7 @@ export function openShortcuts({ host }) {
   const foot = document.createElement("div");
   foot.className = "foot";
   const close = document.createElement("button");
-  close.textContent = "Close";
+  close.textContent = t("Close");
   close.className = "ghost";
   close.addEventListener("click", () => overlay.remove());
   foot.appendChild(close);
