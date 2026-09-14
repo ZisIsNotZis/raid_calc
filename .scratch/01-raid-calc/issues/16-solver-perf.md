@@ -1,6 +1,6 @@
 # Ticket: 16-solver-perf
 
-- **Status:** claimed
+- **Status:** done
 - **Need-review:** yes
 - **Need-test-cases:** yes
 
@@ -30,3 +30,8 @@ AC4. Evidence: benchmark script under scripts/ (committed), before/after numbers
      under `.scratch/01-raid-calc/evidence/`.
 
 Design refs: raid-calc.md §3.3/§3.5/§3.7, ctmc.js, machine.js, optimizer.js.
+
+## Comments (closure)
+
+- 2026-09-13 agent (pi, deepseek-v4): implemented and merged on master (b504d58).
+  16-solver-perf done; lock released by the merge commit.

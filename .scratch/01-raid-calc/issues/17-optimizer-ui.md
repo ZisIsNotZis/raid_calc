@@ -1,6 +1,6 @@
 # Ticket: 17-optimizer-ui
 
-- **Status:** claimed
+- **Status:** done
 - **Need-review:** yes (behavior changes + docs)
 
 ## Issue
@@ -21,3 +21,8 @@ AC2. A "Show curves" action renders/overlays the top-3 (both metrics) into the r
 AC3. Docs are made honest: implement config-level pins or strike the sidebar claim.
 
 Design refs: ui.md §8, optimizer.md §5-§6 (dual), drawer in main.js.
+
+## Comments (closure)
+
+- 2026-09-13 agent (pi, deepseek-v4): implemented and merged on master (b504d58).
+  17-optimizer-ui done; lock released by the merge commit.
