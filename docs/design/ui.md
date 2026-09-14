@@ -16,8 +16,11 @@ canvas, right properties panel, plus a bottom **results drawer** over the canvas
 `localStorage` (and is mirrored into `config.ui.lang` / `ui.theme` so an exported config carries it).
 Boot order: saved preference → config → browser/OS hint (`navigator.language`, `prefers-color-scheme`).
 Translations live in `src/ui/i18n.js`, keyed by the English string so an untranslated string degrades to
-readable English instead of an identifier. The light theme is a `[data-theme="light"]` variable set;
-nothing outside `index.html`'s variables may hard-code a color.
+readable English instead of an identifier (lookup is own-property only). The light theme is a
+`[data-theme="light"]` variable set; structural colors (surfaces, borders, text, shadows, the canvas
+grid, the minimap) come from those variables — translucent accent tints stay inline because they read
+correctly in both themes. The smoke suite measures text contrast in light mode (≥ 4.5:1) rather than
+trusting the palette.
 
 Nothing is duplicated across regions. Top-level results have exactly one home (§5).
 
@@ -67,7 +70,7 @@ Nothing is duplicated across regions. Top-level results have exactly one home (�
 | Pointer-drag a card (>4px), drop on empty canvas | Move (persists to `ui.pos`) |
 | Pointer-drag a card, drop on a pool card | Re-parent: becomes a member of that pool (appended last) |
 | Drag a library kind onto a pool card | Append a kind-ref member |
-| Drag a library kind onto empty canvas | Create a one-disk pool at that point |
+| Drag a library kind onto empty canvas | Create a one-disk pool at that point (refused with a toast when that kind has no free inventory) |
 | Create where no pool can take a member (`strip`/`split` need an exact count) | The new pool is nested beside the nearest member by wrapping it, or appended to the nearest `concat` member; the exact counts above it are never touched |
 | Drag the sidebar "Pool" item onto a pool card / empty canvas | Create a pool as that pool's member / at that point |
 | Double-click empty canvas | Create a pool there |

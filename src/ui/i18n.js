@@ -184,6 +184,20 @@ const ZH = {
   // round 2 additions
   "drag onto a pool (or empty canvas) to create one there":
     "拖到存储池上（或空白处）以在那里新建",
+  root: "根节点",
+  "no free {kind} disks left — raise its inventory count first":
+    "没有空闲的 {kind} 磁盘了 — 请先增加它的库存数量",
+  "no free disks left — raise a disk model's inventory count first":
+    "没有空闲磁盘了 — 请先增加某个磁盘型号的库存数量",
+  pool: "存储池",
+  "λcc /h": "λcc /h",
+  "TOP-LEVEL": "顶层",
+  "{n} member(s)": "{n} 个成员",
+  "re-link · drop on empty canvas to cancel": "重新连接 · 放到空白处取消",
+  "drag to re-parent · drop on empty canvas to cancel": "拖动以改变父级 · 放在空白处取消",
+  "language / 语言": "语言 / language",
+  "theme": "主题",
+  "keep this curve as a comparison overlay": "把这条曲线固定为对比叠加",
   "Ctrl+K opens the command palette. ? lists every shortcut.":
     "Ctrl+K 打开命令面板，? 查看全部快捷键。",
   "Keyboard & gestures": "键盘与手势",
@@ -204,8 +218,7 @@ const ZH = {
   "Click a pool card to edit it. Drag a card to move or re-parent it; drag its top port to re-link it. Drag a disk model from the library onto a pool to add a member.":
     "点击存储池卡片即可编辑。拖动卡片可移动或改变父级；拖动顶部端口可重新连接。把磁盘库中的型号拖到存储池上即可添加成员。",
   "move it · drop on a pool to re-parent": "移动 · 放到存储池上改变父级",
-  "re-link · drop on empty canvas to cancel": "重新连接 · 放到空白处取消",
-  "select it (hover shows ✕)": "选中（悬停显示 ✕）",
+    "select it (hover shows ✕)": "选中（悬停显示 ✕）",
   "edit it in place": "就地编辑",
   "zoom · pan · pan": "缩放 · 平移 · 平移",
     "every pool here needs an exact number of members — add it to a concat pool instead":
@@ -227,7 +240,7 @@ const DICTS = { en: {}, zh: ZH };
 export function makeT(lang) {
   const dict = DICTS[lang] || {};
   return (text, vars) => {
-    let s = dict[text] !== undefined ? dict[text] : text;
+    let s = Object.hasOwn(dict, text) ? dict[text] : text;
     if (vars)
       for (const [k, v] of Object.entries(vars))
         s = s.split(`{${k}}`).join(String(v));

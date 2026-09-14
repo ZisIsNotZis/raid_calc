@@ -156,7 +156,7 @@ const SHORTCUTS = [
   ["Delete", "delete the selected pool, disk model, or selected wire"],
   ["Esc", "cancel a drag · close a dialog · deselect"],
   ["drag card", "move it · drop on a pool to re-parent"],
-  ["drag top port", "re-link · drop on empty canvas to cut"],
+  ["drag top port", "re-link · drop on empty canvas to cancel"],
   ["click wire", "select it (hover shows ✕)"],
   ["double-click value", "edit it in place"],
   ["wheel · space+drag · middle-drag", "zoom · pan · pan"],

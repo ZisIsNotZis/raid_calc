@@ -508,7 +508,7 @@ export function renderCanvas({
         sel.dataset.act = "select";
         sel.dataset.path = `${id}.members[${i}]`;
         sel.appendChild(el("b", m.strategy));
-        sel.appendChild(el("i", `${(m.members || []).length} member(s)`));
+        sel.appendChild(el("i", t("{n} member(s)", { n: (m.members || []).length })));
         chip.appendChild(sel);
       }
       const x = el("button", "✕");
@@ -618,7 +618,7 @@ export function renderCanvas({
     dot.style.background = isRoot ? "var(--accent2)" : "var(--accent)";
     hd.appendChild(dot);
     const slot = memberSlotOf(id);
-    hd.appendChild(el("span", isRoot ? "root" : `pool ${slot !== null ? slot + 1 : ""}`));
+    hd.appendChild(el("span", isRoot ? t("root") : `${t("pool")} ${slot !== null ? slot + 1 : ""}`));
     const badge = el("span", isRoot ? "TOP-LEVEL" : node.strategy.toUpperCase());
     badge.className = "badge";
     hd.appendChild(badge);
@@ -676,7 +676,7 @@ export function renderCanvas({
             ? `${node.strategy} ${node.n ?? 1}+${node.m ?? 0}`
             : "concat";
       bd.appendChild(kvRow(null, t("strategy"), strategyText));
-      bd.appendChild(kvRow("lambdaCC", "λcc /h", expfmt(node.lambdaCC)));
+      bd.appendChild(kvRow("lambdaCC", t("λcc /h"), expfmt(node.lambdaCC)));
       bd.appendChild(memberChips(id, node));
       // every pool shows its own E[lost](t) — the canvas is an instrument, not just a diagram. The
       // root's curve lives in its ribbon, so it is not repeated here.
@@ -703,7 +703,7 @@ export function renderCanvas({
       out.className = "port out";
       out.dataset.port = "out";
       out.dataset.path = id;
-      out.title = t("drag to re-parent · drop on empty canvas to cut the link");
+      out.title = t("drag to re-parent · drop on empty canvas to cancel");
       card.appendChild(out);
     }
     const inn = el("div");
@@ -850,10 +850,12 @@ export function renderCanvas({
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
       if (actions.onView) actions.onView({ ...view });
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   });
 
   // ---- hud --------------------------------------------------------------------
@@ -1303,6 +1305,14 @@ export function renderCanvas({
   };
 
   // "busy" covers drags AND pans: an async re-render would replace the world mid-pan and freeze it
+  // A stuck counter would disable every async preview for the rest of the session, so it is also
+  // reset whenever the window loses the pointer.
+  const resetPans = () => {
+    panCount = 0;
+    container.classList.remove("panning");
+  };
+  window.addEventListener("blur", resetPans);
+  window.addEventListener("pointercancel", resetPans);
   container.__dragActive = () => !!gesture || panCount > 0;
   container.__editing = () => !!container.querySelector("input.inline");
   container.__worldFromClient = (clientX, clientY) => {
@@ -1355,12 +1365,15 @@ export function renderCanvas({
     };
     const up = () => {
       container.classList.remove("panning");
+      panCount -= 1;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
       if (actions.onView) actions.onView({ ...view });
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   };
 
   // middle-drag pan

@@ -779,6 +779,40 @@ await step("the language choice survives a reload and lands in the config", asyn
     detail: `prefs=${stored}, config.ui.lang=${inConfig}, after reload=${afterReload}`,
   };
 });
+await step("light + Chinese render legibly (evidence screenshots)", async () => {
+  await page.selectOption(".mini-select >> nth=1", { label: "☀" });
+  await page.selectOption(".mini-select >> nth=0", { label: "中文" });
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: resolve(evidence, "ux-06-light-zh.png") });
+  const contrast = await page.evaluate(() => {
+    const lum = (c) => {
+      const [r, g, b] = c.match(/\d+/g).map(Number).slice(0, 3).map((v) => {
+        const s = v / 255;
+        return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const ratio = (a, b) => {
+      const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m);
+      return (x + 0.05) / (y + 0.05);
+    };
+    const node = document.querySelector(".node");
+    const chip = document.querySelector(".node .chip");
+    return {
+      node: ratio(getComputedStyle(node).color, getComputedStyle(node).backgroundColor),
+      chip: ratio(getComputedStyle(chip).color, getComputedStyle(chip).backgroundColor),
+    };
+  });
+  await page.selectOption(".mini-select >> nth=0", { label: "EN" });
+  await page.selectOption(".mini-select >> nth=1", { label: "🌙" });
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: resolve(evidence, "ux-08-dark-with-curves.png") });
+  return {
+    ok: contrast.node >= 4.5 && contrast.chip >= 4.5,
+    detail: `contrast node ${contrast.node.toFixed(2)}, chip ${contrast.chip.toFixed(2)}`,
+  };
+});
+
 await step("the theme selector switches to light and back", async () => {
   await page.selectOption(".mini-select >> nth=1", { label: "☀" });
   const light = await page.evaluate(() => document.documentElement.dataset.theme);

@@ -699,11 +699,31 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   // Create a pool (optionally seeded with one disk of `kindId`) at a canvas point, keeping the
   // dropped position. Seeding matters: an empty pool is invalid, so every created pool must be
   // immediately runnable.
+  // Free inventory of a kind: referenced members + hot spares must stay within `count`, so a created
+  // pool may only seed a disk that actually exists (validation would otherwise fail immediately).
+  const freeDisks = (cfg, id) =>
+    (cfg.kinds[id] ? cfg.kinds[id].count - kindUsage(cfg, id) - cfg.kinds[id].spares : 0);
+
+  const seedableKind = (cfg, preferred) => {
+    if (preferred && freeDisks(cfg, preferred) > 0) return preferred;
+    return Object.keys(cfg.kinds).find((id) => freeDisks(cfg, id) > 0) || null;
+  };
+
   const createPoolAt = (world, { kindId = null, strategy = "concat", clientX, clientY } = {}) => {
     const cfg0 = store.get();
     const target = dropTarget(clientX, clientY);
     if (!resolvePath(cfg0, target.path)) return;
-    const seedKind = kindId || Object.keys(cfg0.kinds)[0] || null;
+    if (kindId && freeDisks(cfg0, kindId) <= 0)
+      return toast(
+        t("no free {kind} disks left — raise its inventory count first", { kind: kindId }),
+        "bad",
+      );
+    const seedKind = seedableKind(cfg0, kindId);
+    if (!seedKind)
+      return toast(
+        t("no free disks left — raise a disk model's inventory count first"),
+        "bad",
+      );
     const made =
       seedKind && strategy === "concat"
         ? {
