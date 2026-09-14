@@ -210,6 +210,13 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
 
   rootEl.append(header, side, canvas, props, drawer);
 
+  const scenarioLabel = (cfg) => {
+    const w = cfg.workload || {};
+    return `${w.storeTB} TB · ${w.horizonY} y · ${
+      cfg.global && cfg.global.contention ? t("contended") : t("dedicated")
+    }`;
+  };
+
   const renderChrome = () => {
     runBtn.textContent = `▶ ${t("Run")}`;
     optimizeBtn.textContent = `✦ ${t("Auto-optimize")}`;
@@ -246,6 +253,11 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
         posHints,
       );
       const withUi = { ...next, ui: { ...(next.ui || before.ui || {}), pos: after } };
+      // a structural change reshuffles member paths, so a cached curve would be shown on the wrong
+      // card until the debounced pass catches up
+      if (poolPathsOf(before).join("|") !== poolPathsOf(withUi).join("|"))
+        for (const key of [...cardResults.keys()])
+          if (key !== "tree") cardResults.delete(key);
       store.set(() => withUi);
       setRunError(msg);
       // a structural edit can delete the selected node (or an ancestor of it): a dangling path
@@ -574,6 +586,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     if (plan.kind === "wrap") {
       const ok = await askConfirm({
         host: rootEl,
+        t,
         title: t("Keep the rest of the tree?"),
         body:
           t("Promoting this pool would leave {n} other node(s) outside the new root. ", {
@@ -614,37 +627,139 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     renderAll();
   };
 
+  // `strip`/`split` pools accept an EXACT number of members, so appending a created pool to one of
+  // them would invalidate the whole config — which is exactly what the default sample's root is.
+  const acceptsMember = (node) => isPoolNode(node) && node.strategy === "concat";
+
+  // Nearest ancestor (starting at `from`) that can take another member.
+  const acceptingAncestor = (cfg, from) => {
+    let path = from;
+    while (path) {
+      if (acceptsMember(resolvePath(cfg, path))) return path;
+      path = parentPathOf(path);
+    }
+    return null;
+  };
+
   // Where does a drag-out / double-click land in the tree? A pool card under the pointer is the
-  // parent; empty canvas means the selected pool if one is selected, else the root.
-  const dropParent = (clientX, clientY) => {
+  // target; empty canvas means the selected pool if one is selected, else the root.
+  const dropTarget = (clientX, clientY) => {
     const card = clientX === undefined ? null : cardAt(clientX, clientY);
-    if (card) return card.dataset.id;
+    if (card) return { path: card.dataset.id, explicit: true };
     const cfg = store.get();
-    return isPoolPath(cfg, selection) ? selection : "tree";
+    const base = isPoolPath(cfg, selection) ? selection : "tree";
+    return { path: base, explicit: false };
+  };
+
+  // The POOL member of `basePath` whose card sits closest to the drop point. A kind-ref member is
+  // not a candidate: it stands for `count` slots, so wrapping it would collapse them into one and
+  // break the parent's exact member count.
+  const nearestMember = (basePath, clientX, clientY) => {
+    const base = resolvePath(store.get(), basePath);
+    const poolSlots = ((base && base.members) || [])
+      .map((m, i) => ({ m, i }))
+      .filter((e) => isPoolNode(e.m));
+    if (!poolSlots.length) return null;
+    let best = `${basePath}.members[${poolSlots[0].i}]`;
+    if (clientX === undefined) return best;
+    let bestD = Infinity;
+    for (const { i } of poolSlots) {
+      const id = `${basePath}.members[${i}]`;
+      const elNode = [...canvas.querySelectorAll(".node")].find((n) => n.dataset.id === id);
+      if (!elNode) continue;
+      const r = elNode.getBoundingClientRect();
+      const d = Math.hypot(r.x + r.width / 2 - clientX, r.y + r.height / 2 - clientY);
+      if (d < bestD) {
+        bestD = d;
+        best = id;
+      }
+    }
+    return best;
+  };
+
+  const expandAncestors = (path) => {
+    const collapsedNow = uiOf().collapsed || {};
+    const toExpand = [];
+    let p = parentPathOf(path);
+    while (p) {
+      if (collapsedNow[p]) toExpand.push(p);
+      p = parentPathOf(p);
+    }
+    if (toExpand.length)
+      commitUi(
+        (ui) => {
+          const collapsed = { ...(ui.collapsed || {}) };
+          for (const x of toExpand) collapsed[x] = false;
+          return { ...ui, collapsed };
+        },
+        { render: false },
+      );
   };
 
   // Create a pool (optionally seeded with one disk of `kindId`) at a canvas point, keeping the
   // dropped position. Seeding matters: an empty pool is invalid, so every created pool must be
   // immediately runnable.
   const createPoolAt = (world, { kindId = null, strategy = "concat", clientX, clientY } = {}) => {
-    const parentPath = dropParent(clientX, clientY);
     const cfg0 = store.get();
-    if (isPoolPath(cfg0, parentPath) || parentPath === "tree") {
-      const parent = resolvePath(cfg0, parentPath);
-      if (!parent || !parent.members) return;
-    } else return;
+    const target = dropTarget(clientX, clientY);
+    if (!resolvePath(cfg0, target.path)) return;
     const seedKind = kindId || Object.keys(cfg0.kinds)[0] || null;
+    const made =
+      seedKind && strategy === "concat"
+        ? {
+            node: "pool",
+            strategy,
+            lambdaCC: 0,
+            members: [{ node: "kind", kind: seedKind, count: 1 }],
+          }
+        : { node: "pool", strategy, lambdaCC: 0, members: [] };
+
+    const parentPath = acceptingAncestor(cfg0, target.path);
     let newPath = null;
-    const ok = commit((c) => {
-      const parent = resolvePath(c, parentPath);
-      const slot = parent.members.length;
-      newPath = `${parentPath}.members[${slot}]`;
-      let next = addPool(c, { strategy, parentPath, slotIndex: slot });
-      if (seedKind && strategy === "concat")
-        next = connectDiskToPool(next, seedKind, newPath);
-      return next;
-    }, "create pool");
+    let ok = false;
+    if (parentPath) {
+      ok = commit((c) => {
+        const parent = resolvePath(c, parentPath);
+        if (!acceptsMember(parent)) return c;
+        const slot = parent.members.length;
+        newPath = `${parentPath}.members[${slot}]`;
+        return setPath(c, `${parentPath}.members`, [...parent.members, made]);
+      }, "create pool");
+    } else {
+      // Nothing on this path can take another member (strip/split pools need an exact count). Prefer
+      // the nearest member that is itself a concat pool; otherwise nest the new pool beside the
+      // nearest member by wrapping it — either way every exact count above stays intact.
+      // If the target itself has no pool member to sit beside, walk up: wrapping the nearest pool
+      // member of an ancestor still puts the new pool exactly where the pointer was.
+      let memberPath = null;
+      for (let p = target.path; p && !memberPath; p = parentPathOf(p))
+        memberPath = nearestMember(p, clientX, clientY);
+      if (!memberPath)
+        return toast(
+          t("every pool here needs an exact number of members — add it to a concat pool instead"),
+          "bad",
+        );
+      const host = acceptsMember(resolvePath(cfg0, memberPath)) ? memberPath : null;
+      ok = commit((c) => {
+        const old = resolvePath(c, memberPath);
+        if (!old) return c;
+        if (host) {
+          newPath = `${host}.members[${old.members.length}]`;
+          return setPath(c, `${host}.members`, [...old.members, made]);
+        }
+        newPath = `${memberPath}.members[1]`;
+        return setPath(c, memberPath, {
+          node: "pool",
+          strategy: "concat",
+          lambdaCC: 0,
+          members: [old, structuredClone(made)],
+        });
+      }, host ? "create pool" : "wrap and create pool");
+      if (ok && !host)
+        toast(t("no pool here can take another member — nested it beside the nearest one"));
+    }
     if (!ok || !newPath) return;
+    expandAncestors(newPath);
     if (world)
       commitUi(
         (ui) => ({
@@ -845,6 +960,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   // to create it there (this is why the old click-only button felt like it needed a selection).
   const startPaletteDrag = (e, kind) => {
     if (e.button !== 0) return;
+    e.preventDefault(); // see startLibraryDrag: a native text drag would eat the pointerup
     const start = { x: e.clientX, y: e.clientY };
     let moved = false;
     const ghost = el("div", kind === "pool" ? `+ ${t("Pool")}` : `+ ${t("Disk model")}`);
@@ -860,9 +976,17 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       if (canvas.__highlightTarget)
         canvas.__highlightTarget(ev.clientX, ev.clientY, true);
     };
+    const abort = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", abort);
+      ghost.remove();
+      if (canvas.__clearTargets) canvas.__clearTargets();
+    };
     const up = (ev) => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", abort);
       ghost.remove();
       suppressPaletteClick = moved;
       if (canvas.__clearTargets) canvas.__clearTargets();
@@ -875,6 +999,9 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   };
   const startLibraryDrag = (e, kindId) => {
     if (e.button !== 0) return;
+    // Without this the browser starts a native text drag on the row's label, which cancels the
+    // pointer sequence (pointercancel, no pointerup) and the drop never happens.
+    e.preventDefault();
     libDrag = { kindId, moved: false, start: { x: e.clientX, y: e.clientY } };
     const ghost = el("div", `+ ${kindId}`);
     ghost.className = "lib-ghost";
@@ -891,9 +1018,18 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       if (canvas.__highlightTarget)
         canvas.__highlightTarget(ev.clientX, ev.clientY, true);
     };
+    const abort = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", abort);
+      ghost.remove();
+      libDrag = null;
+      if (canvas.__clearTargets) canvas.__clearTargets();
+    };
     const up = (ev) => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", abort);
       ghost.remove();
       const card = libDrag && libDrag.moved ? cardAt(ev.clientX, ev.clientY) : null;
       const moved = libDrag && libDrag.moved;
@@ -912,6 +1048,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", abort);
   };
 
   const cardAt = (clientX, clientY) => {
@@ -1071,12 +1208,19 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     allPreviewTimer = setTimeout(() => {
       // A canvas re-render in the middle of a gesture replaces the dragged card's element: the drag
       // would snap back, lose its highlight and still commit on release. Defer instead.
-      if (canvas.__dragActive && canvas.__dragActive()) {
+      if (
+        (canvas.__dragActive && canvas.__dragActive()) ||
+        (canvas.__editing && canvas.__editing())
+      ) {
         scheduleAllPreviews();
         return;
       }
       const cfg = store.get();
       const paths = poolPathsOf(cfg);
+      // A curve is only valid for the node it was computed from: paths shift when members are added
+      // or removed, so entries whose path disappeared (or whose pass never ran) must not linger.
+      for (const key of [...cardResults.keys()])
+        if (key !== "tree" && !paths.includes(key)) cardResults.delete(key);
       if (paths.length > 32) return; // keep the tab responsive on huge trees
       for (const path of paths) {
         let pcfg;
@@ -1432,6 +1576,8 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
 
   // ---- boot -------------------------------------------------------------------
 
+  // mirror the boot-time language/theme into the config, so an export carries the user's choice
+  commitUi((ui) => ({ ...ui, lang, theme }), { recordHistory: false, render: false });
   renderChrome();
   renderAll();
   scenarioChip.textContent = scenarioLabel(store.get());
@@ -1440,10 +1586,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
   });  return { store, run, getState: () => store.get(), renderAll };
 }
 
-function scenarioLabel(cfg) {
-  const w = cfg.workload || {};
-  return `${w.storeTB} TB · ${w.horizonY} y · ${cfg.global?.contention ? "contended" : "dedicated"}`;
-}
+
 
 // --- tiny DOM helpers ---------------------------------------------------------
 

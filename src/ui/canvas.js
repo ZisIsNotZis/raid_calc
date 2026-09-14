@@ -454,6 +454,7 @@ export function renderCanvas({
   const cards = new Map();
   const positions = new Map();
   let cardDragging = false;
+  let panCount = 0;
 
   const applyView = () => {
     world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`;
@@ -1256,6 +1257,7 @@ export function renderCanvas({
       // deselects instead
       const start = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
       let panned = false;
+      panCount += 1;
       const move = (ev) => {
         if (!panned && Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < 4)
           return;
@@ -1270,13 +1272,16 @@ export function renderCanvas({
       const up = () => {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", up);
         container.classList.remove("panning");
+        panCount -= 1;
         if (panned) {
           if (actions.onView) actions.onView({ ...view });
         } else if (actions.onSelect) actions.onSelect(null);
       };
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", up);
       return;
     }
     if (container.classList.contains("space-pan")) return;
@@ -1297,7 +1302,9 @@ export function renderCanvas({
     listen();
   };
 
-  container.__dragActive = () => !!gesture;
+  // "busy" covers drags AND pans: an async re-render would replace the world mid-pan and freeze it
+  container.__dragActive = () => !!gesture || panCount > 0;
+  container.__editing = () => !!container.querySelector("input.inline");
   container.__worldFromClient = (clientX, clientY) => {
     const r = container.getBoundingClientRect();
     return screenToWorld(view, clientX - r.left, clientY - r.top);
@@ -1338,6 +1345,7 @@ export function renderCanvas({
   const spacePanDown = (e) => {
     if (!container.classList.contains("space-pan")) return;
     e.preventDefault();
+    panCount += 1;
     const start = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
     container.classList.add("panning");
     const move = (ev) => {
@@ -1359,6 +1367,7 @@ export function renderCanvas({
   const middlePanDown = (e) => {
     if (e.button !== 1) return;
     e.preventDefault();
+    panCount += 1;
     const start = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
     const move = (ev) => {
       view.x = start.vx + (ev.clientX - start.x);
@@ -1366,12 +1375,15 @@ export function renderCanvas({
       applyView();
     };
     const up = () => {
+      panCount -= 1;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
       if (actions.onView) actions.onView({ ...view });
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   };
 
   const onWheel = (e) => {

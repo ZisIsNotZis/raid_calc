@@ -46,6 +46,10 @@ Nothing is duplicated across regions. Top-level results have exactly one home (Â
 - **Empty-canvas gestures**: left-drag on empty canvas pans (a click without movement deselects),
   middle-drag and space-drag also pan, and the canvas is `user-select:none` so a drag never paints a
   text selection. Double-clicking empty canvas creates a pool there.
+- **Sidebar drags suppress the native text drag** (`user-select:none` on the sidebar, `preventDefault`
+  on `pointerdown`, and a `pointercancel` abort path). Without that the browser starts an HTML5 text
+  drag on the row's label, which cancels the pointer sequence â€” no `pointerup` ever fires and the drop
+  silently does nothing.
 - **Free positions, explicit tidy.** `config.ui.pos[path] = {x,y}` holds user drags (part of the config,
   so it survives export/import). Nodes without a stored position are placed by the tidy-tree base layout.
   The `Tidy` button clears all stored positions (`ui.pos`), restoring the computed tree.
@@ -64,6 +68,7 @@ Nothing is duplicated across regions. Top-level results have exactly one home (Â
 | Pointer-drag a card, drop on a pool card | Re-parent: becomes a member of that pool (appended last) |
 | Drag a library kind onto a pool card | Append a kind-ref member |
 | Drag a library kind onto empty canvas | Create a one-disk pool at that point |
+| Create where no pool can take a member (`strip`/`split` need an exact count) | The new pool is nested beside the nearest member by wrapping it, or appended to the nearest `concat` member; the exact counts above it are never touched |
 | Drag the sidebar "Pool" item onto a pool card / empty canvas | Create a pool as that pool's member / at that point |
 | Double-click empty canvas | Create a pool there |
 | Drag a card's **top port** (`out`) | Re-link: the card detaches from its parent and follows the cursor; drop on another pool to re-parent |

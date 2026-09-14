@@ -45,22 +45,17 @@ export function renderProps(
   const info = selectedNodeInfo(config, selection);
   if (!info) {
     root.appendChild(el("h3", t("Nothing selected")));
-    root.appendChild(
-      note(
-        "Click a pool card to edit it. Drag a card to move or re-parent it; drag its top port to " +
-          "re-link it. Drag a disk model from the library onto a pool to add a member.",
-      ),
-    );
+    root.appendChild(note(t("Click a pool card to edit it. Drag a card to move or re-parent it; drag its top port to re-link it. Drag a disk model from the library onto a pool to add a member.")));
     root.appendChild(el("h4", t("Canvas gestures")));
     const list = el("div");
     list.className = "keylist";
     for (const [k, v] of [
-      ["drag card", "move · drop on a pool to re-parent"],
-      ["drag top port", "re-link · drop on empty canvas to cut"],
-      ["click wire", "select · Del cuts · hover shows ✕"],
-      ["double-click value", "edit in place"],
-      ["wheel / space+drag", "zoom · pan"],
-      ["F / 0", "fit · reset zoom"],
+      ["drag card", t("move it · drop on a pool to re-parent")],
+      ["drag top port", t("re-link · drop on empty canvas to cancel")],
+      ["click wire", t("select it (hover shows ✕)")],
+      ["double-click value", t("edit it in place")],
+      ["wheel / space+drag / empty-drag", t("zoom · pan · pan")],
+      ["F / 0", t("fit the view to the tree")],
     ]) {
       const row = el("div");
       row.className = "keyrow";
@@ -186,8 +181,12 @@ export function renderProps(
 
   if (info.type === "pool") {
     root.appendChild(
-      select(t("Strategy"), Object.entries(STRATEGY_LABELS), info.node.strategy, (s) =>
-        onStructural((cfg) => switchStrategy(cfg, info.path, s), "strategy"),
+      select(
+        t("Strategy"),
+        Object.entries(STRATEGY_LABELS).map(([k, v]) => [k, t(v)]),
+        info.node.strategy,
+        (s) =>
+          onStructural((cfg) => switchStrategy(cfg, info.path, s), "strategy"),
       ),
     );
     if (info.node.strategy === "strip")
