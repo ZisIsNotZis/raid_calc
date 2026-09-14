@@ -8,8 +8,8 @@ feedback) for what is a strict tree, so its affordances lied about the model. Co
 
 ## 1. Regions
 
-Header (undo/redo, reset, import/export, scenario chip, **language**, **theme**, shortcuts, Results
-toggle, Run, Auto-optimize), left sidebar (palette, **Disk library**, inventory, comparison pins), center
+Header (undo/redo, reset, import/export, scenario chip, language, theme, shortcuts, Results
+toggle, Run, Auto-optimize), left sidebar (palette, **Disk library**, inventory), center
 canvas, right properties panel, plus a bottom **results drawer** over the canvas.
 
 **Language and theme** are environment choices, not project data, so the saved preference lives in
@@ -97,8 +97,8 @@ hovering instead of surfacing as a failure after release.
   numbers: blanking the primary readout on every keystroke would be worse than showing it flagged.
 - **Results drawer** (bottom of the canvas, toggled from the ribbon, the header, or `G`): both charts at
   reading size — E[lost](t) on a **log y-axis**, P(any loss)(t) **linear 0–1** — for mode 1 (and mode 2
-  side by side), plus the full metric list. Comparison overlays for pinned configs and optimizer top-3
-  render here.
+  side by side), plus the full metric list. Pinned-run overlays render here; the Auto-optimize modal's
+  "Show curves" evaluates each top-3 candidate and pins it as an overlay.
 - **Every pool card carries its own E[lost](t) curve** — the canvas is an instrument, not a diagram.
   A cheap pass (9 points, state budget 2·10⁴, debounced 420 ms, skipped above 32 pools) evaluates each
   subtree; a card whose subtree is invalid (or too large) shows a muted `—` with the reason as its

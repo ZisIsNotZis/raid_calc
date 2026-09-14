@@ -842,6 +842,25 @@ await step("F fits the view to the content", async () => {
   const z2 = await page.locator(".zoom-label").textContent();
   return { ok: z2 !== z1, detail: `${z1} → ${z2}` };
 });
+await step("the auto-optimize modal shows search honesty labels and results", async () => {
+  await page.click("header button:has-text('Auto-optimize')");
+  await page.waitForSelector(".opt-labels", { timeout: 30000 });
+  await page.waitForTimeout(1500);
+  const labels = await page.locator(".opt-labels").innerText();
+  const rows = await page.locator(".optimizer-body table tr").count();
+  const okLabels = /feasible/i.test(labels) && /evaluated/i.test(labels) && /state cap/i.test(labels);
+  const showButtons = await page.locator("button:has-text('Show curves')").count();
+  await page.locator("button:has-text('Show curves')").first().click();
+  await page.waitForTimeout(700);
+  const drawerOpen = await page.locator(".drawer").evaluate((n) => !n.hidden);
+  const pins = await page.locator(".drawer-head button:has-text('Clear')").count();
+  await page.keyboard.press("Escape");
+  return {
+    ok: okLabels && rows >= 3 && showButtons === 3 && drawerOpen && pins === 1,
+    detail: `rows=${rows}, show=${showButtons}, drawer=${drawerOpen}, pins=${pins}, labels="${labels.replace(/\s+/g, " ").slice(0, 80)}"`,
+  };
+});
+
 await step("the minimap shows a viewport rectangle", async () => ({
   ok: (await page.locator(".minimap .mm-view").count()) === 1,
 }));

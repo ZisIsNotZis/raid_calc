@@ -185,6 +185,19 @@ const ZH = {
   "drag onto a pool (or empty canvas) to create one there":
     "拖到存储池上（或空白处）以在那里新建",
   root: "根节点",
+  "feasible": "可行",
+  "evaluated": "已评估",
+  "skipped {n} candidates too large for the solver":
+    "已跳过 {n} 个超出求解器规模的候选",
+  "no candidate was skipped": "没有候选被跳过",
+  "budget": "时间预算",
+  "candidate cap": "候选上限",
+  "state cap": "状态上限",
+  "search degraded to keep the budget — result is an approximation":
+    "为守住时间预算已降级 — 结果为近似",
+  "Show curves": "显示曲线",
+  "curves added to the results drawer — press G to view":
+    "曲线已加入结果面板 — 按 G 查看",
   "no free {kind} disks left — raise its inventory count first":
     "没有空闲的 {kind} 磁盘了 — 请先增加它的库存数量",
   "no free disks left — raise a disk model's inventory count first":

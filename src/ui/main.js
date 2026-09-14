@@ -1122,7 +1122,7 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     head.appendChild(close);
     drawer.appendChild(head);
 
-    if (!lastResult) {
+    if (!lastResult && !overlays.length) {
       const n = el("div", t("Run the evaluation to see curves here."));
       n.className = "note";
       drawer.appendChild(n);
@@ -1135,34 +1135,41 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
       wrap.className = "drawer-chart";
       wrap.appendChild(el("div", label)).className = "dc-title";
       const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      const refResult = lastResult || overlays[0]?.result;
       renderChart(svg, {
         width: 420,
         height: 168,
         series: seriesFn(lastResult, "var(--accent2)", "run"),
-        xLabel: `${lastResult.times[lastResult.times.length - 1] / 8760} y`,
+        xLabel: refResult
+          ? `${refResult.times[refResult.times.length - 1] / 8760} y`
+          : "",
         yLabel: label,
         logY,
       });
       wrap.appendChild(svg);
       return wrap;
     };
+    const baseSeries = (result, color, tag, mode) =>
+      result
+        ? [
+            {
+              label: `${tag} rigorous`,
+              x: result.times,
+              y: evaluateSeries(result, { mode: 1, bytes: true }).y,
+              color,
+            },
+            {
+              label: `${tag} partial`,
+              x: result.times,
+              y: evaluateSeries(result, { mode: 2, bytes: true }).y,
+              color: "var(--warn)",
+              dashed: true,
+            },
+          ]
+        : [];
     grid.appendChild(
       mk(t("E[lost](t)"), true, (result, color, tag) => {
-        const out = [
-          {
-            label: `${tag} rigorous`,
-            x: result.times,
-            y: evaluateSeries(result, { mode: 1, bytes: true }).y,
-            color,
-          },
-          {
-            label: `${tag} partial`,
-            x: result.times,
-            y: evaluateSeries(result, { mode: 2, bytes: true }).y,
-            color: "var(--warn)",
-            dashed: true,
-          },
-        ];
+        const out = baseSeries(result, color, tag);
         overlays.forEach((o) =>
           out.push({
             label: `${o.label} rigorous`,
@@ -1177,9 +1184,9 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     );
     grid.appendChild(
       mk(t("P(any loss)(t)"), false, (result, color, tag) => {
-        const out = [
-          { label: `${tag} P`, x: result.times, y: result.anyLossProb, color },
-        ];
+        const out = result
+          ? [{ label: `${tag} P`, x: result.times, y: result.anyLossProb, color }]
+          : [];
         overlays.forEach((o) =>
           out.push({
             label: o.label,
@@ -1192,17 +1199,19 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
         return out;
       }),
     );
-    const s = fmtSummary(summarize(lastResult));
-    const metrics = el("div");
-    metrics.className = "drawer-metrics";
-    for (const [k, v] of Object.entries(s)) {
-      const row = el("div");
-      row.className = "row";
-      row.appendChild(el("span", k));
-      row.appendChild(el("b", v));
-      metrics.appendChild(row);
+    if (lastResult) {
+      const s = fmtSummary(summarize(lastResult));
+      const metrics = el("div");
+      metrics.className = "drawer-metrics";
+      for (const [k, v] of Object.entries(s)) {
+        const row = el("div");
+        row.className = "row";
+        row.appendChild(el("span", k));
+        row.appendChild(el("b", v));
+        metrics.appendChild(row);
+      }
+      grid.appendChild(metrics);
     }
-    grid.appendChild(metrics);
     drawer.appendChild(grid);
   };
 
@@ -1516,6 +1525,15 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
 
   // ---- optimizer modal (unchanged surface, plus Apply) ------------------------
 
+  // evaluate an optimizer design config so its curves can be pinned into the drawer
+  const designSummary = (config) => {
+    const { ok, result } = safeEvaluate(config, { stateBudget: 1e6, points: 51 });
+    return ok ? result : null;
+  };
+
+  // optimizer.md §5-6: search returns { best, top3, feasibleCount, evaluatedCount, skippedLarge,
+  // degraded }; the modal must consume that shape (it previously expected an array and showed
+  // "unexpected shape"), disclose the search's honesty labels, and offer the promised curve overlay.
   async function openOptimizer() {
     const cfg = store.get();
     const modal = document.createElement("div");
@@ -1543,54 +1561,89 @@ export function createApp(rootEl, { initialConfig = SAMPLE_CONFIG } = {}) {
     }
     try {
       const res = await mod.optimize(cfg);
-      if (!Array.isArray(res)) {
+      const top3 = res && Array.isArray(res.top3) ? res.top3 : null;
+      if (!top3) {
         body.textContent = t("optimize() returned an unexpected shape.");
         return;
       }
+      // honesty labels (optimizer.md §6): how much was searched, what was skipped and why
+      const labels = el("div");
+      labels.className = "opt-labels";
+      const skipped =
+        res.skippedLarge > 0
+          ? t("skipped {n} candidates too large for the solver", { n: res.skippedLarge })
+          : t("no candidate was skipped");
+      labels.appendChild(
+        el(
+          "div",
+          `${t("feasible")} ${res.feasibleCount ?? 0} · ${t("evaluated")} ${res.evaluatedCount ?? 0} · ${skipped}`,
+        ),
+      );
+      labels.appendChild(
+        el("div", t("budget") + ` 10 s · ` + t("candidate cap") + ` 2000 · ` + t("state cap") + ` 20000`),
+      );
+      if (res.degraded)
+        labels.appendChild(el("div", t("search degraded to keep the budget — result is an approximation")));
+      body.appendChild(labels);
+
       const table = document.createElement("table");
       const thead = document.createElement("tr");
-      for (const h of ["#", t("Design"), "E[lost]", t("P(loss)"), t("usable"), t("Why"), ""])
+      for (const h of ["#", t("Design"), "E[lost]", t("P(loss)"), t("usable"), ""])
         thead.appendChild(el("th", h));
       table.appendChild(thead);
-      res.slice(0, 3).forEach((d, i) => {
-        const s = d.result ? fmtSummary(summarize(d.result)) : {};
+      const overlayConfigs = [];
+      top3.forEach((d, i) => {
         const tr = document.createElement("tr");
         if (i === 0) tr.className = "win";
         tr.appendChild(el("td", String(i + 1)));
-        tr.appendChild(el("td", designLabel(d)));
-        tr.appendChild(el("td", s.lost ?? "—"));
-        tr.appendChild(el("td", s.anyLossPct ?? "—"));
-        tr.appendChild(el("td", s.usable ?? "—"));
-        const why = el("td", d.reason ?? "");
-        why.className = "why";
-        tr.appendChild(why);
-        const apply = el("td");
-        if (d.tree) {
-          const b = el("button", t("Apply"));
-          b.className = "ghost tiny";
-          b.addEventListener("click", () => {
-            commit((c) => ({ ...c, tree: structuredClone(d.tree) }), "apply design");
+        tr.appendChild(el("td", designLabel({ tree: d.config && d.config.tree })));
+        tr.appendChild(el("td", fmtBytes(d.lostBytes ?? NaN)));
+        tr.appendChild(el("td", d.anyLossProb === undefined ? "—" : `${(d.anyLossProb * 100).toFixed(3)}%`));
+        tr.appendChild(el("td", d.usableTB === undefined ? "—" : `${d.usableTB.toFixed(0)} TB`));
+        const actions = el("td");
+        const show = el("button", t("Show curves"));
+        show.className = "ghost tiny";
+        show.addEventListener("click", () => {
+          if (!d.config) return;
+          const result = designSummary(d.config);
+          if (!result) return;
+          overlays.push({
+            label: `opt #${i + 1}`,
+            result,
+            color: PALETTE_COLORS[(overlays.length + 1) % PALETTE_COLORS.length],
+          });
+          show.textContent = t("Show curves") + " ✓";
+          drawerOpen = true;
+          renderDrawer();
+        });
+        const apply = el("button", t("Apply"));
+        apply.className = "ghost tiny";
+        apply.addEventListener("click", () => {
+          if (d.config && d.config.tree) {
+            commit((c) => ({ ...c, tree: structuredClone(d.config.tree) }), "apply design");
             close();
             renderAll();
-          });
-          apply.appendChild(b);
-        }
-        tr.appendChild(apply);
+          }
+        });
+        actions.appendChild(show);
+        actions.appendChild(apply);
+        tr.appendChild(actions);
         table.appendChild(tr);
       });
+      body.appendChild(table);
+
       const foot = el("div");
       foot.className = "foot";
       const closeBtn = btn(t("Close"), "ghost");
       closeBtn.addEventListener("click", close);
       foot.appendChild(closeBtn);
-      body.textContent = "";
-      body.appendChild(table);
-      body.appendChild(foot);
     } catch (e) {
       const n = el("div", `optimize() failed: ${e.message || e}`);
       n.className = "note";
+      n.dataset.stack = String(e && e.stack || "");
       body.textContent = "";
       body.appendChild(n);
+      console.error("[optimizer modal]", e);
     }
   }
 

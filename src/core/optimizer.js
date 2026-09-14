@@ -237,7 +237,7 @@ export function optimize(
     objective = "lostBytes",
     budgetMs = 10000,
     candidateCap = 2000,
-    stateCap = 5000,
+    stateCap = 20000,
   } = {},
 ) {
   const started = Date.now();

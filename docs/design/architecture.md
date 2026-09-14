@@ -48,9 +48,11 @@ never reads it. It is written by the canvas and never by the engine.
 `src/core/`: `config.js` (schema, validation, normalization, `validate`) · `strategies/index.js`
 (strategy definitions: member count, usable factor, placement/IO fanout) · `machine.js` (pool machine
 construction, repair-chain collapsing, spare clusters, `BuildError`, state budget) · `ctmc.js`
-(uniformization, `lossCurves`, `anyLossCurve`) · `evaluate.js` (top-level config → curves; the only
-entry point) · `mc.js` (Gillespie cross-check) · `optimizer.js` (greedy + local search, feasibility
-gates, top-3) · `errors.js` (shared error types).
+(transient solver: **uniformization** by default — Poisson-weighted embedded chain, exact to 1e-12 and
+~3-4× faster than the retained RK4 (`method: "rk4"`, kept as the fine-step reference) — `lossCurves`,
+`anyLossCurve`) · `evaluate.js` (top-level config → curves; the only entry point) · `mc.js` (Gillespie
+cross-check) · `optimizer.js` (greedy + local search, feasibility gates, top-3) · `errors.js` (shared
+error types).
 
 `src/ui/`: `app.js` (state store over config JSON, undo stack, file import/export) · `canvas.js` (pure
 node model: paths, tree ops, drag-legality predicates — plus the DOM renderer: cards, wires, viewport,

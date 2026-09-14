@@ -1,0 +1,7 @@
+reference configs (leaf erasure pools, 5-year horizon, 25 output points)
+config           states        RK4  uniformization  speedup
+strip( 3,1)            35       217ms             53ms 4.1×
+strip( 6,1)           120       493ms            280ms 1.8×
+strip( 8,2)           286      1744ms            530ms 3.3×
+strip(12,2)           680      4886ms           1252ms 3.9×
+strip(16,3)          1540     13916ms           3136ms 4.4×

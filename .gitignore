@@ -2,4 +2,7 @@
 node_modules/
 .scratch/heartbeat/
 *.log
-raid-calc.html
+
+# agent harness telemetry (machine-local session state)
+.pi-glla/
+.pi-lens.json
