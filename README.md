@@ -1,5 +1,9 @@
 # raid_calc
 
+> **Status: closed (v1 milestone, 2026-09-29).** The hierarchical storage
+> reliability calculator reached its documented v1 state. No further development
+> is planned unless the project's inputs or goals change.
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Hierarchical storage reliability calculator: model disks with statistical failure rates, compose them into arbitrarily nested pools (concat / strip / split / strip-split), and get the **mathematical expectation of data loss vs time** — exact CTMC numerics, with Monte Carlo as cross-check.
