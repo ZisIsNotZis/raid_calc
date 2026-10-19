@@ -8,6 +8,8 @@
 
 Hierarchical storage reliability calculator: model disks with statistical failure rates, compose them into arbitrarily nested pools (concat / strip / split / strip-split), and get the **mathematical expectation of data loss vs time** — exact CTMC numerics, with Monte Carlo as cross-check.
 
+![Raid Calc interface](docs/screenshot.png)
+
 ## Quickstart
 
 ```bash
