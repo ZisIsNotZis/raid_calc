@@ -1,3 +1,5 @@
+[English](README.md) | **简体中文**
+
 <p align="center">
   <img src="docs/logo.svg" width="104" height="104" alt="raid_calc 标志">
 </p>
@@ -9,7 +11,7 @@
 <p align="center">一个单文件、离线的浏览器计算器：把磁盘组合成任意深度的嵌套存储池，用精确的 CTMC 数值方法计算数据损失随时间的数学期望。</p>
 
 <p align="center">
-  <strong>简体中文</strong> · <a href="README.md">English</a> · <a href="LICENSE">MIT</a> · <a href="raid-calc.html">打开应用</a>
+  <a href="raid-calc.html">应用文件</a> · <a href="LICENSE">MIT 许可证</a> · <a href="CONTRIBUTING.md">参与贡献</a>
 </p>
 
 ![raid_calc 编辑器：嵌套存储池与预期损失曲线](docs/screenshot.png)
@@ -18,7 +20,13 @@
 
 ## 快速开始
 
-用现代浏览器打开 [`raid-calc.html`](raid-calc.html) 即可。无需服务器、无需联网、无需构建，完全离线运行。
+克隆仓库后，用现代浏览器打开 [`raid-calc.html`](raid-calc.html) 即可。无需服务器、无需联网、无需构建，完全离线运行。
+
+```bash
+git clone https://github.com/ZisIsNotZis/raid_calc.git
+cd raid_calc
+open raid-calc.html      # macOS；Linux 用 xdg-open raid-calc.html，或直接双击文件
+```
 
 仓库中的 HTML 由 [`src/`](src/) 生成，因此克隆后可以直接从磁盘打开。修改源码后重新构建：
 

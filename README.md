@@ -1,3 +1,5 @@
+**English** | [简体中文](README.zh-CN.md)
+
 <p align="center">
   <img src="docs/logo.svg" width="104" height="104" alt="raid_calc logo">
 </p>
@@ -9,7 +11,7 @@
 <p align="center">A single-file, offline browser calculator that composes disks into arbitrarily nested pools and computes the mathematical expectation of data loss over time with exact CTMC numerics.</p>
 
 <p align="center">
-  <a href="README.zh-CN.md">简体中文</a> · <strong>English</strong> · <a href="LICENSE">MIT</a> · <a href="raid-calc.html">Open the app</a>
+  <a href="raid-calc.html">App file</a> · <a href="LICENSE">MIT license</a> · <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
 ![raid_calc editor with nested pools and expected-loss curves](docs/screenshot.png)
@@ -18,7 +20,13 @@
 
 ## Quick start
 
-Open [`raid-calc.html`](raid-calc.html) in a modern browser. That is the whole install: no server, no network, no build step, fully offline.
+Clone the repo and open [`raid-calc.html`](raid-calc.html) in a modern browser. That is the whole install: no server, no network, no build step, fully offline.
+
+```bash
+git clone https://github.com/ZisIsNotZis/raid_calc.git
+cd raid_calc
+open raid-calc.html      # macOS; xdg-open raid-calc.html on Linux, or just double-click the file
+```
 
 The committed HTML is generated from [`src/`](src/) and always runs straight from disk. To rebuild it after a source change:
 
