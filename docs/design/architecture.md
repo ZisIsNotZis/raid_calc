@@ -5,13 +5,13 @@ Status: v1 (2026-02-05). Companion to `raid-calc.md` (model), `optimizer.md`, `u
 ## 1. Deliverable & build
 
 - Source: ES modules under `src/core/` and `src/ui/`; build via esbuild into a single committed `raid-calc.html` (inline JS + CSS). Opens via `file://`, fully offline, no server, no runtime dependencies.
-- `src/` is authored; the built HTML is committed so the artifact is always directly usable. Build script: `npm run build` (esbuild as the only dev dependency).
+- `src/` is authored; the built HTML is committed so the artifact is always directly usable. Build script: `npm run build` (esbuild is the only build dependency; vitest and playwright are dev-only tooling and never ship).
 
 ## 2. Threading
 
 - Everything runs on the main thread: UI, chart rendering, `evaluate()`.
 - No Web Worker. v1 claimed an inline Blob worker for Monte Carlo, optimizer sweeps, and previews;
-one was ever built, and the single-file bundle plus the collapsed repair-chain speedup make it
+none was ever built, and the single-file bundle plus the collapsed repair-chain speedup make it
 unnecessary: a full 5-year horizon runs in seconds, per-node previews use a reduced point count and
 state budget, and oversized state spaces fail fast with `BuildError` instead of freezing. If a future
 feature reintroduces a blocking sweep (large MC batches, wide optimizer searches), the worker lands
