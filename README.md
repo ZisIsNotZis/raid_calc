@@ -14,7 +14,7 @@
 
 ![raid_calc editor with nested pools and expected-loss curves](docs/screenshot.png)
 
-*The editor builds a tree of pools, previews `E[lost](t)` on every pool, and plots the top-level result.*
+*The editor builds a tree of pools; the results drawer plots the top-level `E[lost](t)` and `P(any loss)(t)` curves.*
 
 ## Quick start
 
