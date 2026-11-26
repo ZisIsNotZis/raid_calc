@@ -18,6 +18,8 @@
 
 *The editor builds a tree of pools; the results drawer plots the top-level `E[lost](t)` and `P(any loss)(t)` curves.*
 
+**Completed.** The offline calculator, CTMC solver and visual pool editor passed acceptance. [Verification and limits](COMPLETION.md).
+
 ## Quick start
 
 Clone the repo and open [`raid-calc.html`](raid-calc.html) in a modern browser. That is the whole install: no server, no network, no build step, fully offline.
